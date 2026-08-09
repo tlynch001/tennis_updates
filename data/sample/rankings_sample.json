@@ -1,0 +1,15 @@
+{
+  "_comment": "Fixture data for offline development and unit tests. Not real WTA rankings - do not use for production output.",
+  "rankings": [
+    {"rank": 1, "player_id": "sample-001", "name": "Sample Player One", "country_code": "BLR", "points": 8550},
+    {"rank": 2, "player_id": "sample-002", "name": "Sample Player Two", "country_code": "KAZ", "points": 8056},
+    {"rank": 3, "player_id": "sample-003", "name": "Sample Player Three", "country_code": "USA", "points": 6625},
+    {"rank": 4, "player_id": "sample-004", "name": "Sample Player Four", "country_code": "USA", "points": 5649},
+    {"rank": 5, "player_id": "sample-005", "name": "Sample Player Five", "country_code": "RUS", "points": 5293},
+    {"rank": 6, "player_id": "sample-006", "name": "Sample Player Six", "country_code": "POL", "points": 4711},
+    {"rank": 7, "player_id": "sample-007", "name": "Sample Player Seven", "country_code": "CHN", "points": 4102},
+    {"rank": 8, "player_id": "sample-008", "name": "Sample Player Eight", "country_code": "ITA", "points": 3890},
+    {"rank": 9, "player_id": "sample-009", "name": "Sample Player Nine", "country_code": "CZE", "points": 3554},
+    {"rank": 10, "player_id": "sample-010", "name": "Sample Player Ten", "country_code": "GRE", "points": 3201}
+  ]
+}

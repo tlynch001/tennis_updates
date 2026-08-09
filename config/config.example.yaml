@@ -1,0 +1,104 @@
+# wta-daily configuration
+#
+# Copy this file to config/config.yaml (git-ignored) and adjust as needed.
+# Nothing in here should ever be a secret/API key - those are resolved from
+# environment variables (see .env.example) via the `*_env` settings below.
+
+# Which tour to track. Only "wta" ships today; adding "atp" is a matter of
+# writing new rankings/matches provider plugins and pointing this at them -
+# see wta_daily/plugins/rankings and wta_daily/plugins/matches.
+tour: wta
+
+# How many players to track (the brief's "Top 10", but flip to 25 any time).
+top_n: 10
+
+# Where persistent data (rankings history, player cache) and generated
+# output live. Both are relative to the current working directory unless
+# given as absolute paths.
+data_dir: data
+output_dir: output
+log_dir: logs
+
+# --- Data providers -----------------------------------------------------
+# `provider` selects a registered plugin by name (see
+# wta_daily/plugins/registry.py). Everything else in each block is passed
+# straight through to that plugin's constructor.
+
+rankings_provider:
+  provider: wta_official
+  # base_url: https://api.wtatennis.com/tennis
+  # ranking_type: rankSingles
+  # metric: singles
+
+match_provider:
+  provider: wta_official
+  # lookback_matches: 25
+
+# --- Networking (used by every HTTP-based provider) ----------------------
+network:
+  timeout_seconds: 15
+  max_retries: 3
+  backoff_factor: 1.5
+  user_agent: "wta-daily/0.1 (+https://github.com/your-org/wta-daily)"
+
+# --- Narration script -----------------------------------------------------
+script:
+  # "template" (default, offline, free) or "openai" (needs OPENAI_API_KEY).
+  generator: template
+  target_minutes_low: 5
+  target_minutes_high: 8
+  words_per_minute: 150
+  openai_model: gpt-4o-mini
+  openai_api_key_env: OPENAI_API_KEY
+
+# --- Graphics ---------------------------------------------------------------
+graphics:
+  renderer: pillow
+  width: 1920
+  height: 1080
+  theme:
+    background_color: "#0B0F19"
+    panel_color: "#141B2D"
+    accent_color: "#00E0C6"
+    text_color: "#F5F7FA"
+    subtext_color: "#9AA5B1"
+    up_color: "#2ECC71"
+    down_color: "#E74C3C"
+    same_color: "#9AA5B1"
+    # font_bold: assets/fonts/YourFont-Bold.ttf
+    # font_regular: assets/fonts/YourFont-Regular.ttf
+
+# --- Voice synthesis (Phase 2, disabled by default) ------------------------
+voice:
+  enabled: false
+  provider: elevenlabs
+  voice_id: "21m00Tcm4TlvDq8ikWAM"
+  model_id: "eleven_multilingual_v2"
+  stability: 0.5
+  similarity_boost: 0.75
+  api_key_env: ELEVENLABS_API_KEY
+
+# --- Video assembly (Phase 2, disabled by default) -------------------------
+video:
+  enabled: false
+  assembler: ffmpeg
+  width: 1920
+  height: 1080
+  fps: 30
+  seconds_per_player_card: 6
+  # background_music_path: assets/music/theme.mp3
+
+# --- Git automation (Phase 2, disabled by default) -------------------------
+git:
+  auto_commit: false
+  auto_push: false
+  remote: origin
+  # branch: main
+  commit_message_template: "Daily WTA Update {date}"
+
+# --- Tournament preferences --------------------------------------------------
+# Used by future modules (e.g. tournament previews) to prioritize which
+# events get extra narration attention.
+tournament_preferences:
+  - Grand Slam
+  - WTA 1000

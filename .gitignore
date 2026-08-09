@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets - never commit these
+.env
+*.env.local
+
+# Local configuration copied from config.example.yaml
+config/config.yaml
+
+# Generated daily output folders (output/<YYYY-MM-DD>/) are intentionally
+# NOT ignored - the whole point of the "Git" workflow step is to commit them
+# so a day's assets are versioned and reviewable. Only ignore stray venvs/logs.
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Local provider caches (safe to regenerate)
+data/cache/*
+!data/cache/.gitkeep
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

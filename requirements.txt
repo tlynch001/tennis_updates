@@ -1,0 +1,12 @@
+# Core runtime dependencies for wta_daily.
+#
+# Kept intentionally small: voice synthesis (ElevenLabs) and script
+# generation (OpenAI) are implemented as plain HTTPS calls with `requests`,
+# so no extra SDKs are required even for the Phase 2 features. Video
+# assembly shells out to the `ffmpeg` CLI, which must be installed
+# separately (e.g. `apt install ffmpeg` / `brew install ffmpeg`).
+
+requests>=2.31,<3
+PyYAML>=6.0,<7
+Pillow>=10.0
+python-dotenv>=1.0,<2
