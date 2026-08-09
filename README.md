@@ -33,6 +33,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 - [Architecture & extending it](#architecture--extending-it)
 - [Error handling & logging](#error-handling--logging)
 - [Scheduling](#scheduling)
+- [Raspberry Pi deployment](#raspberry-pi-deployment)
 - [Testing & code quality](#testing--code-quality)
 - [Roadmap](#roadmap)
 
@@ -103,7 +104,12 @@ data, which is already enough for a clean broadcast look.
 
 ## Quick start
 
-Requires Python 3.10+. `ffmpeg` is only needed if you enable video assembly.
+Requires Python 3.11+ (see [Raspberry Pi deployment](#raspberry-pi-deployment)
+for why - short version: Python 3.9 is EOL and current Pillow already
+requires 3.10+). `ffmpeg` is only needed if you enable video assembly.
+For development on Windows via Cursor, any 3.11+ interpreter works fine;
+this is just for local dev - see the Raspberry Pi section for the
+production deployment steps (`deploy/bootstrap_pi.sh` etc.).
 
 ```bash
 python3 -m venv .venv
@@ -292,6 +298,10 @@ The CLI (`python -m wta_daily.cli --config config/config.yaml`) is a single,
 idempotent-per-date command, so it works the same way under any scheduler:
 
 - **cron**: `0 6 * * * cd /path/to/wta-daily && .venv/bin/python -m wta_daily.cli --config config/config.yaml >> logs/cron.log 2>&1`
+  (a ready-to-use, `flock`-guarded version of this line lives in
+  [`deploy/cron/wta-daily.cron`](deploy/cron/wta-daily.cron)).
+- **systemd timer** (recommended on Linux/Raspberry Pi - see below) - unit
+  files in [`deploy/systemd/`](deploy/systemd/).
 - **Windows Task Scheduler**: point an action at
   `...\.venv\Scripts\python.exe -m wta_daily.cli --config config\config.yaml`,
   trigger daily.
@@ -302,6 +312,109 @@ idempotent-per-date command, so it works the same way under any scheduler:
 
 Changing the schedule never requires touching source code - only the
 scheduler's own trigger configuration.
+
+## Raspberry Pi deployment
+
+This project is designed to run unattended on a **Raspberry Pi 4 Model B**
+that also runs **Pi-hole** - so every choice below is made to (a) never
+disrupt Pi-hole, (b) avoid unnecessary system-wide changes, and (c) work
+headlessly over SSH.
+
+### Target environment
+
+The Pi 4's SoC (Cortex-A72) is 64-bit-capable, and the recommended target is
+a clean install of the current **Raspberry Pi OS (Debian 13 "Trixie"), Lite,
+64-bit**, which ships **Python 3.13** as the system interpreter - fully
+supported and security-patched, with broad `piwheels`/PyPI ARM64 wheel
+coverage (no more compiling C extensions from source than necessary). If you
+need the most conservative/battle-tested option instead, **Bookworm (Debian
+12), Lite, 64-bit** (Python 3.11, supported for a couple more years) is a
+perfectly good fallback - either satisfies `requires-python = ">=3.11"`.
+
+We deliberately do **not** recommend an in-place `apt dist-upgrade` across
+major Raspberry Pi OS versions (e.g. Bullseye -> Bookworm/Trixie) - Raspberry
+Pi's own guidance is that this is unsupported and can leave a Pi unable to
+boot. A clean reflash (Raspberry Pi Imager, new SD card) plus migrating your
+Pi-hole configuration is the safe, officially-supported path:
+
+1. **Back up Pi-hole**: Admin UI -> Settings -> Teleporter (or `pihole -a -t`
+   on the CLI). This exports your blocklists, allow/deny lists, and DHCP
+   settings as one archive.
+2. **Flash a new SD card** with Raspberry Pi Imager - Raspberry Pi OS Lite,
+   64-bit, Trixie (or Bookworm). Keep the old card as a fallback until
+   you're confident in the new one.
+3. Boot the new card, run the standard Pi-hole installer, then **restore**
+   the Teleporter backup from step 1.
+4. Deploy this project (below) - the system Python is now current, so none
+   of the "isolated interpreter" workarounds an older OS would need are
+   necessary.
+
+If you're staying on an older/32-bit OS for now (e.g. Bullseye, Python
+3.9.2, `armv7l`), see the note at the end of this section.
+
+### Deploying the project
+
+Everything below only ever touches your own home directory and your own
+user-level systemd/cron entries - never `apt`, never a system Python, never
+anything Pi-hole depends on.
+
+```bash
+# On the Pi, over SSH:
+git clone <your-fork-url> ~/wta-daily
+cd ~/wta-daily
+bash deploy/bootstrap_pi.sh      # creates .venv/, installs deps, copies config/.env templates
+nano config/config.yaml          # adjust top_n, providers, theme, etc.
+nano .env                        # add ELEVENLABS_API_KEY / OPENAI_API_KEY only if you enable those features
+
+# Try one run by hand before scheduling it:
+.venv/bin/python -m wta_daily.cli --config config/config.yaml --verbose
+```
+
+To pick up code changes later: `cd ~/wta-daily && git pull && bash deploy/bootstrap_pi.sh`
+(safe/idempotent - it reuses the existing venv and only installs what changed).
+
+### Scheduling it unattended (systemd, recommended)
+
+Uses a **user-level** systemd service/timer, so it runs under your own
+account with no root privileges and no system-wide unit files:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/wta-daily.service deploy/systemd/wta-daily.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now wta-daily.timer
+
+# One-time only: let your user's systemd units keep running even when
+# nobody is logged in over SSH (the normal state for a headless Pi). This
+# is the only step that needs sudo, and it only affects your own account -
+# it does not touch Pi-hole or any other system service.
+sudo loginctl enable-linger "$USER"
+```
+
+Check on it later with `systemctl --user status wta-daily.timer` and
+`journalctl --user -u wta-daily -f`.
+
+The service file caps memory (`MemoryMax=768M`), CPU (`CPUQuota=200%`, i.e.
+at most 2 of the Pi 4's 4 cores), and scheduling priority (`Nice=10`) so that
+even a runaway run can never starve Pi-hole's DNS resolution on the same
+2 GB Pi - see [`deploy/systemd/wta-daily.service`](deploy/systemd/wta-daily.service)
+for the full rationale in comments.
+
+Prefer cron instead? [`deploy/cron/wta-daily.cron`](deploy/cron/wta-daily.cron)
+is a one-line drop-in for `crontab -e` that does the same thing.
+
+### If you're staying on Raspberry Pi OS Bullseye / Python 3.9 for now
+
+The package targets `>=3.11` because Python 3.9 reached end-of-life on
+2025-10-31 (no further security patches) and current Pillow (>=12) has
+already dropped 3.9 support, so `pip` would silently pin you to an aging
+Pillow release. If a full reflash isn't an option right now, the least-bad
+alternative is a **user-space Python 3.11+ via `pyenv`** (compiled once,
+installed under `~/.pyenv`, never touching `/usr/bin/python3` or anything
+Pi-hole/the OS relies on) with the project's venv built from that interpreter
+instead of the system one. This works but adds a one-time ~30-60 minute
+build and an interpreter you're responsible for updating yourself - a clean
+OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 

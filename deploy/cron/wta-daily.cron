@@ -1,0 +1,16 @@
+# Alternative to the systemd user timer (deploy/systemd/), for anyone who'd
+# rather use plain cron. Install with:
+#
+#   crontab -e
+#
+# then paste in the line below (adjust the path if you cloned the project
+# somewhere other than ~/wta-daily). No root/system crontab needed - a
+# per-user crontab is enough and keeps this fully isolated from Pi-hole,
+# which manages its own scheduled tasks separately.
+#
+# `flock` prevents two runs from overlapping if one takes longer than a day
+# for any reason (e.g. a slow first-time dependency install or a retry
+# storm against a flaky API). `>> logs/cron.log 2>&1` gives you a fallback
+# log even before wta_daily's own dated logs/ files are written.
+
+0 6 * * * /usr/bin/flock -n /tmp/wta-daily.lock $HOME/wta-daily/.venv/bin/python -m wta_daily.cli --config $HOME/wta-daily/config/config.yaml >> $HOME/wta-daily/logs/cron.log 2>&1

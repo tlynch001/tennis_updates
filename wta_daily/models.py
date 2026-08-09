@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class Movement(str, Enum):
+class Movement(StrEnum):
     """Direction a player moved in the rankings compared to the previous snapshot."""
 
     UP = "up"
