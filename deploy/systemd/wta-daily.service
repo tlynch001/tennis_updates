@@ -1,0 +1,54 @@
+# User-level systemd service for wta-daily.
+#
+# Installed as a *user* unit (not a system unit) so nothing here needs root
+# and nothing touches system-wide configuration that Pi-hole or the OS
+# depend on. Install with:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/wta-daily.service deploy/systemd/wta-daily.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now wta-daily.timer
+#
+# For the timer to fire even when nobody is logged in over SSH (the normal
+# case for a headless box), enable "linger" for your user ONCE:
+#
+#   sudo loginctl enable-linger "$USER"
+#
+# That's the only step that touches anything outside your own user account,
+# and it only tells systemd to keep your user's services running across
+# reboots/logouts - it does not modify Pi-hole or any system service.
+#
+# `%h` below expands to your home directory automatically; this file works
+# unmodified as long as the project lives at `~/wta-daily` (adjust the three
+# paths below if you cloned it somewhere else).
+
+[Unit]
+Description=wta-daily: generate today's WTA Top N video assets
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/wta-daily
+ExecStart=%h/wta-daily/.venv/bin/python -m wta_daily.cli --config %h/wta-daily/config/config.yaml
+EnvironmentFile=-%h/wta-daily/.env
+
+# --- Keep this well clear of Pi-hole, which must keep resolving DNS ---
+# Cap memory so a runaway image/video render can never pressure the rest of
+# a 2 GB Pi into swapping or OOM.
+MemoryMax=768M
+MemoryHigh=640M
+# Never use more than half of the Pi 4's four cores.
+CPUQuota=200%
+# Run at a lower scheduling priority than everything else on the box.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# If the OOM killer ever has to act, kill this job long before anything
+# else on the system (including Pi-hole/FTL) is considered.
+OOMScoreAdjust=500
+
+# Unattended-friendly: log to the systemd journal (journalctl --user -u
+# wta-daily) in addition to the app's own dated files under logs/.
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,21 @@
+# Fires wta-daily.service once a day. See wta-daily.service for install
+# steps (this file goes in the same ~/.config/systemd/user/ directory).
+#
+# Change OnCalendar= to move the schedule - no code changes needed, and no
+# need to touch cron or any system-level config either.
+
+[Unit]
+Description=Daily timer for wta-daily
+
+[Timer]
+# 06:00 local time every day.
+OnCalendar=*-*-* 06:00:00
+# If the Pi was powered off/rebooting at 06:00, run once as soon as it's
+# back up instead of silently skipping the day.
+Persistent=true
+# Small random jitter so this isn't hammering the WTA API at the exact
+# same second as every other install of this project.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
