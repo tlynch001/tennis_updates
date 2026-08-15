@@ -53,7 +53,8 @@ Here's what was evaluated:
 | **Genius Sports** | 🔒 Official for WTA/Australian Open, via a Stats Perform sub-license | Same access story as Stats Perform - enterprise only, no public pricing. |
 | **Sportradar** | 🔒 Exclusive rights partner for **ATP** (not WTA); its WTA coverage is secondary/aggregated | Has a genuine 30-day/1,000-request self-serve trial, but production pricing reverts to sales (one estimate: "from $1,250/mo"). |
 | **`livetennisapi.com` (used by this project, combined with `wta_official`)** | ✅ Selected as a second match-data source | Independent, **not** WTA-licensed, self-serve, publicly priced ($9.99-$99.99/mo tiers, 14-day-equivalent free tier). Genuine per-match `scheduled_time` + `event_status` (no tournament-date ambiguity), usually fresher than the free feed - but empirically has its own per-player coverage gaps (see below), so it's combined with `wta_official` via `best_of` rather than trusted alone. |
-| GoalServe, `api-tennis.com`, other RapidAPI tennis aggregators (`tennis-api.com`, "Ultimate Tennis", "Tennis Live Data") | 🔒 Good paid fallbacks, not currently wired in | Similar shape to `livetennisapi.com` - self-serve, $10-$170/mo range, "real-time" marketing claims not independently verified for all of them. Reasonable alternatives/additions to the `best_of` source list (`wta_daily/plugins/matches/`) if `livetennisapi.com` ever becomes unreliable. |
+| **`api-tennis.com` (implemented, not enabled by default)** | ✅ Implemented as an available `best_of` source | Independent, **not** WTA-licensed, self-serve trial. Rankings matched `api.wtatennis.com` exactly; match coverage was *better* than `livetennisapi.com` for at least one player - but ~40% of a live sample showed match dates one calendar day later than the same matches' independently-confirmed dates. See "A second paid source evaluated" below for the full writeup on why this keeps it out of the default source list. |
+| GoalServe, other RapidAPI tennis aggregators (`tennis-api.com`, "Ultimate Tennis", "Tennis Live Data") | 🔒 Good paid fallbacks, not currently wired in | Similar shape to the two above - self-serve, $10-$170/mo range, "real-time" marketing claims not independently verified for all of them. Reasonable alternatives/additions to the `best_of` source list (`wta_daily/plugins/matches/`) if the two implemented paid sources ever become unreliable. |
 | SportsDataIO, Sportmonks, Enet Pulse, BetsAPI/B365api | ❌ Ruled out | SportsDataIO's only self-serve tier explicitly excludes tennis (full tennis access is enterprise-only); Sportmonks has no tennis product at all; Enet Pulse has no public pricing (sales-team engagement required even to trial); BetsAPI repackages bookmaker in-play data (polling-only, no push feed) rather than a league-sanctioned feed. |
 | UTR (Universal Tennis Rating) Engage API | ❌ Ruled out | A *different* ranking system, not the official WTA ranking, and its terms explicitly bar analytics/derivative use of the data. |
 | Scraping `wtatennis.com` HTML pages directly | ❌ Rejected | Unnecessary - the JSON API above is faster, more stable, and was confirmed reachable without scraping any HTML. |
@@ -178,6 +179,48 @@ above). `live_tennis_api`'s API key is resolved from the `LIVETENNISAPI_KEY`
 environment variable (`api_key_env` in config) - never hardcoded; see
 `.env.example`. To skip the paid source entirely, set
 `match_provider: {provider: wta_official}` in `config.yaml`.
+
+### A second paid source evaluated (`api_tennis`) - implemented, not enabled by default
+
+[`api-tennis.com`](https://api-tennis.com) was tried as a third source
+(`wta_daily/plugins/matches/api_tennis.py`), using a temporary trial key,
+specifically to compare against the two sources above. Its shape is
+different from `livetennisapi.com` - one endpoint with a `method=` query
+parameter and the key passed as `APIkey=` rather than an `Authorization`
+header - and player resolution is a direct name lookup against its
+`get_standings` response (which conveniently returns every ranked player's
+exact name *and* internal id in one call) rather than a fuzzy search.
+
+**Live comparison against the same current WTA Top 10:**
+
+- **Rankings matched `api.wtatennis.com` exactly** - same order, same point
+  totals, for all 10 players.
+- **Match coverage was better than `live_tennis_api`** for the one player
+  who had a real multi-month gap there: `api_tennis` had her complete
+  history through the correct Wimbledon final date.
+- **A real, minor date-accuracy issue**: 4 of the 10 players' latest
+  results came back exactly one calendar day *later* than the same
+  matches' dates independently confirmed by both other sources (a
+  plausible timezone-rollover artifact in how this vendor buckets match
+  dates - opponent, score, and round were all still correct). This wasn't
+  found in `wta_official`/`live_tennis_api`'s agreement with each other.
+- One more vendor-specific quirk worth knowing: this API encodes some
+  tiebreak set scores unconventionally (e.g. a 7-6(3) set can appear as
+  `score_first: "6.3"`); rather than guess at reverse-engineering it, this
+  provider passes those strings through as-is.
+
+**Why it's implemented but not in `best_of`'s default source list**:
+`best_of` picks whichever source's date is most recent, so adding a source
+with an occasional one-day-*late* drift means it can outrank a same-event,
+more-accurate date from another source - exactly the 4-player pattern
+above would reproduce if all three sources were combined. This is a
+real, measured tradeoff, not a hypothetical one: enable it deliberately
+(see `config.example.yaml`) if you want the extra redundancy and are fine
+with that risk, e.g. as a `live_tennis_api` replacement if you don't have
+a key for that service. Covered by
+[`tests/test_api_tennis_match_provider.py`](tests/test_api_tennis_match_provider.py).
+Its API key is resolved from `APITENNIS_KEY` (`api_key_env` in config) -
+never hardcoded.
 
 ## Player imagery: legal approach
 
@@ -541,14 +584,15 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Nearly 100 unit/integration tests cover models, movement math (including the
+Over 110 unit/integration tests cover models, movement math (including the
 "unknown" vs "new" distinction), country/flag resolution, config loading,
 the plugin registry, snapshot persistence, the sample providers, the
 `wta_official` match provider's date-recovery and bye/walkover/doubles
 filtering logic (mocked HTTP - see
-`tests/test_wta_official_match_provider.py`), the `live_tennis_api` match
-provider's name-resolution and event-status filtering logic (mocked HTTP -
-`tests/test_live_tennis_api_match_provider.py`), the `best_of` composite
+`tests/test_wta_official_match_provider.py`), the `live_tennis_api` and
+`api_tennis` match providers' name-resolution and event-status filtering
+logic (mocked HTTP - `tests/test_live_tennis_api_match_provider.py`,
+`tests/test_api_tennis_match_provider.py`), the `best_of` composite
 provider's "prefer the more recently confirmed date, isolate per-source
 failures" logic (`tests/test_best_of_match_provider.py`, including a
 regression test for the real stale-namesake-record incident described

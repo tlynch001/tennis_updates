@@ -47,12 +47,28 @@ match_provider:
       # lookback_matches: 20
       # api_key_env: LIVETENNISAPI_KEY   # resolved from the environment/.env - never put the key here
   #
+  # A third paid source (api_tennis, api-tennis.com) is also implemented
+  # and available, but deliberately NOT included above by default: live
+  # testing found ~4 of 10 players' latest match dates one calendar day
+  # later than the same matches' dates independently confirmed via the two
+  # sources above - `best_of` prefers the most recent date, so adding this
+  # source can make it pick that slightly-wrong date over a more accurate
+  # one. Its rankings data and overall match coverage were excellent (in
+  # fact more complete than live_tennis_api for one player); see the
+  # README's "Match-data reliability" section for the full comparison. Add
+  # it if you want maximum redundancy and are comfortable with that
+  # tradeoff, or as a replacement for live_tennis_api if you don't have a
+  # livetennisapi.com key:
+  #   - provider: api_tennis
+  #     # lookback_days: 45
+  #     # api_key_env: APITENNIS_KEY
+  #
   # To use only the free official source (no API key needed, no paid
   # dependency), replace the whole block above with:
   #   match_provider:
   #     provider: wta_official
   #
-  # To use only the paid source:
+  # To use only one paid source:
   #   match_provider:
   #     provider: live_tennis_api
   #     api_key_env: LIVETENNISAPI_KEY
