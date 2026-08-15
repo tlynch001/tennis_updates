@@ -69,20 +69,27 @@ class TemplateScriptGenerator(ScriptGenerator):
             "down": _PhraseCycler(phrases.MOVEMENT_DOWN, rng),
             "same": _PhraseCycler(phrases.MOVEMENT_SAME, rng),
             "new": _PhraseCycler(phrases.MOVEMENT_NEW, rng),
+            "unknown": _PhraseCycler(phrases.MOVEMENT_UNKNOWN, rng),
             "win": _PhraseCycler(phrases.MATCH_WIN, rng),
             "loss": _PhraseCycler(phrases.MATCH_LOSS, rng),
             "no_match": _PhraseCycler(phrases.NO_MATCH, rng),
             "gap": _PhraseCycler(phrases.POINTS_GAP_TEMPLATES, rng),
         }
 
-        paragraphs = [rng.choice(phrases.OPENERS).format(n=n, date=date_str)]
+        # Build everything except the final sign-off first, so any length
+        # padding (_pad_to_target_length) is inserted *before* it. The
+        # sign-off must always be the last thing spoken - see
+        # _pad_to_target_length's docstring for the production bug this
+        # ordering fixes.
+        body_paragraphs = [rng.choice(phrases.OPENERS).format(n=n, date=date_str)]
         for index, player in enumerate(report.players):
-            paragraphs.append(self._player_paragraph(player, report, index, n, cyclers, rng))
-        paragraphs.append(rng.choice(phrases.CLOSERS).format(n=n))
+            body_paragraphs.append(self._player_paragraph(player, report, index, n, cyclers, rng))
 
-        script = "\n\n".join(paragraphs)
-        script = self._pad_to_target_length(script, cyclers, rng)
-        return script
+        body = "\n\n".join(body_paragraphs)
+        body = self._pad_to_target_length(body, cyclers, rng)
+
+        closer = rng.choice(phrases.CLOSERS).format(n=n)
+        return f"{body}\n\n{closer}"
 
     def _player_paragraph(
         self,
@@ -100,6 +107,7 @@ class TemplateScriptGenerator(ScriptGenerator):
             Movement.DOWN: cyclers["down"].next(),
             Movement.SAME: cyclers["same"].next(),
             Movement.NEW: cyclers["new"].next(),
+            Movement.UNKNOWN: cyclers["unknown"].next(),
         }[player.movement].format(rank=player.rank, n=n)
 
         if connector:
@@ -140,23 +148,29 @@ class TemplateScriptGenerator(ScriptGenerator):
         return cyclers["gap"].next().format(gap=gap, rank_above=above.rank)
 
     def _pad_to_target_length(
-        self, script: str, cyclers: dict[str, _PhraseCycler], rng: random.Random
+        self, body: str, cyclers: dict[str, _PhraseCycler], rng: random.Random
     ) -> str:
         """Best-effort nudge toward the configured target word count.
 
         The template generator's natural output usually already lands inside
-        the target window for a Top 10; this only adds a short closing note
-        (never fabricated stats) if the script is unusually short, and never
-        truncates content to force it shorter.
+        the target window for a Top 10; this only adds a short informational
+        note (never fabricated stats) if the script is unusually short, and
+        never truncates content to force it shorter.
+
+        Called on the narration *body*, before the final sign-off is
+        appended by :meth:`generate` - contextual filler like this must
+        never end up after the sign-off, which was a production bug (the
+        closer "...we'll see you back here tomorrow" was followed by an
+        unrelated ranking-points note, so the actual final spoken line
+        wasn't the sign-off at all).
         """
 
         target_words = self._config.words_per_minute * self._config.target_minutes_low
-        word_count = len(script.split())
+        word_count = len(body.split())
         if word_count >= target_words:
-            return script
+            return body
         filler = (
             "\n\nAs always, ranking points reflect performance over the last fifty-two weeks, "
-            "so a single result can shuffle several places once a big tournament wraps up. "
-            "We'll track every change and bring you the full picture again tomorrow."
+            "so a single result can shuffle several places once a big tournament wraps up."
         )
-        return script + filler
+        return body + filler

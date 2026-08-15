@@ -70,6 +70,50 @@ and changing two lines in `config.yaml` - never a rewrite. A fully offline
 `wta_daily/plugins/matches/sample.py`, backed by fixtures in
 `data/sample/`) is also included for development, tests, and demos.
 
+### Match-data reliability (production incident, August 2026)
+
+The first production run exposed two real bugs in `wta_official`'s match
+provider, both now fixed and covered by
+[`tests/test_wta_official_match_provider.py`](tests/test_wta_official_match_provider.py):
+
+1. **Tournament start date reported as the match date.** `GET
+   /players/{id}/matches` returns one `StartDate` (and `tournament.startDate`)
+   value per *tournament*, repeated identically for every round played in
+   it - there is no genuine per-match date anywhere in that response. The
+   fix: for each candidate result, a second call to
+   `GET /tournaments/{groupId}/{year}/matches` (which does carry a real
+   per-fixture `MatchTimeStamp` and a `MatchState`) is used to recover the
+   actual date, matching the fixture by the pair of player IDs. If that
+   lookup can't confirm a date for any reason, `match_date` is `null` -
+   **never** a tournament date. This second endpoint's results are cached
+   per tournament for the life of one pipeline run, since several Top N
+   players are usually in the same recent event.
+2. **Stale player-match history.** That same per-player endpoint can lag
+   real-world results by more than a week during/right after a tournament.
+   Its `sort=desc` ordering of *what it does have* checks out (verified by
+   comparing several players' results against the tournament's own live
+   scores), so it's still used to identify "the most recent result this
+   endpoint knows about" - but there's no cheap way to independently
+   discover "what tournaments are happening right now" from this API (the
+   tournament list endpoint returns its full ~19,000-entry history back to
+   1960 with no working date/status filter) to double check that. Building
+   a speculative live-event scanner was judged out of scope for the
+   reliability this data needs; the honest tradeoff documented in
+   `wta_daily/plugins/matches/wta_official.py` is that this provider's
+   output is always *real and verified*, even if - rarely, in a live
+   event's opening days - it can lag behind the true latest result by a
+   few days until the per-player endpoint catches up.
+
+Both issues were fixed by adding one new official endpoint
+(`WtaOfficialApiClient.get_tournament_matches`) rather than introducing a
+third-party data source - `rankings_provider` is unaffected and still uses
+`wta_official`, per the existing plugin design.
+
+Also fixed: byes, walkovers/defaults, doubles, and not-yet-finished
+fixtures are now explicitly excluded from "latest completed singles match"
+(previously only implicit/accidental ordering luck kept a bye from ever
+being picked).
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -215,7 +259,7 @@ CLI (wta_daily/cli.py)
   -> load_config()                     wta_daily/config.py
   -> DailyPipeline.run()                wta_daily/pipeline.py
        1. RankingsProvider.get_top_n()          <- plugin: rankings_registry
-       2. compute_movement() vs snapshot store  wta_daily/movement.py
+       2. compute_movement() vs snapshot store  wta_daily/movement.py (UNKNOWN if no prior snapshot exists at all)
        3. MatchProvider.get_latest_match() x N  <- plugin: matches_registry  (per-player try/except)
        4. RankingsSnapshotStore.save_snapshot() wta_daily/persistence/snapshot_store.py
        5. DailyOutputStore.write_report()       wta_daily/persistence/report_store.py
@@ -291,6 +335,12 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 - HTTP calls (`wta_daily/http_client.py`) retry transient failures with
   exponential backoff before giving up, configurable via `network:` in
   `config.yaml`.
+- **Match-date enrichment failing never drops the whole match.** If the
+  tournament-level lookup used to recover a real match date (see "Match-data
+  reliability" above) can't confirm one - network hiccup, fixture not found,
+  endpoint shape change - `WtaOfficialMatchProvider` logs it and returns the
+  match anyway with `match_date: null`; it never raises, and it never
+  substitutes a tournament date as a "good enough" guess.
 
 ## Scheduling
 
@@ -418,13 +468,18 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-50 unit/integration tests cover models, movement math, country/flag
-resolution, config loading, the plugin registry, snapshot persistence, the
-sample providers, the template script generator (including the "mention
-movement only when it changed" and "no verbatim-identical script two days in
-a row" behaviors), graphics rendering, and a full end-to-end pipeline run
-(including the per-player-failure-isolation scenario) - all using the
-offline `sample` providers, so `pytest` never makes a network call.
+70+ unit/integration tests cover models, movement math (including the
+"unknown" vs "new" distinction), country/flag resolution, config loading,
+the plugin registry, snapshot persistence, the sample providers, the
+`wta_official` match provider's date-recovery and bye/walkover/doubles
+filtering logic (mocked HTTP - see
+`tests/test_wta_official_match_provider.py`), the template script generator
+(including the "mention movement only when it changed", "never say a
+baseline run's players are new", "the sign-off is always last" and "no
+verbatim-identical script two days in a row" behaviors), graphics rendering,
+and a full end-to-end pipeline run (including the per-player-failure-isolation
+scenario) - all using the offline `sample` providers or mocked HTTP
+responses, so `pytest` never makes a real network call.
 
 ```bash
 pytest              # unit + integration tests

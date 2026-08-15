@@ -104,9 +104,13 @@ class DailyPipeline:
         logger.info("Retrieved %d rankings.", len(rankings))
 
         previous = self._snapshot_store.get_previous_snapshot(report_date, self._config.tour)
+        has_previous_snapshot = previous is not None
         previous_ranks = previous_ranks_by_player(previous[1] if previous else None)
         if previous is None:
-            logger.info("No previous snapshot found; all players will be marked as 'new'.")
+            logger.info(
+                "No previous snapshot found; this looks like the first run for this tour. "
+                "Movement will be reported as 'unknown' rather than 'new' for every player."
+            )
         else:
             logger.info("Comparing against snapshot from %s.", previous[0].isoformat())
 
@@ -115,7 +119,9 @@ class DailyPipeline:
         errors: list[str] = []
         for ranking in rankings:
             previous_rank = previous_ranks.get(ranking.player_id)
-            movement = compute_movement(ranking.rank, previous_rank)
+            movement = compute_movement(
+                ranking.rank, previous_rank, has_previous_snapshot=has_previous_snapshot
+            )
             match, match_error = self._safe_get_latest_match(ranking)
             if match_error:
                 errors.append(match_error)

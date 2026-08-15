@@ -20,6 +20,7 @@ def movement_color(movement: Movement, theme) -> tuple[int, int, int]:  # noqa: 
         Movement.DOWN: hex_to_rgb(theme.down_color),
         Movement.SAME: hex_to_rgb(theme.same_color),
         Movement.NEW: hex_to_rgb(theme.accent_color),
+        Movement.UNKNOWN: hex_to_rgb(theme.same_color),
     }[movement]
 
 
@@ -30,7 +31,8 @@ def draw_movement_glyph(
     size: int,
     color: tuple[int, int, int],
 ) -> None:
-    """Draw an up/down triangle, a dash, or a small star for NEW."""
+    """Draw an up/down triangle, a dash for SAME, a ring for NEW, or a filled
+    dot for UNKNOWN (no previous snapshot to compare against at all)."""
 
     x, y = center
     half = size / 2
@@ -41,6 +43,9 @@ def draw_movement_glyph(
     elif movement == Movement.SAME:
         thickness = max(2, size // 6)
         draw.rectangle([x - half, y - thickness / 2, x + half, y + thickness / 2], fill=color)
+    elif movement == Movement.UNKNOWN:
+        radius = half * 0.6
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color)
     else:  # NEW
         draw.ellipse([x - half, y - half, x + half, y + half], outline=color, width=max(2, size // 8))
 
@@ -51,6 +56,7 @@ def movement_label(movement: Movement) -> str:
         Movement.DOWN: "DOWN",
         Movement.SAME: "—",
         Movement.NEW: "NEW",
+        Movement.UNKNOWN: "N/A",
     }[movement]
 
 

@@ -27,6 +27,27 @@ def test_match_result_round_trip() -> None:
     assert restored == match
 
 
+def test_match_result_allows_null_match_date() -> None:
+    """A match can be fully known (opponent/score/round/tournament) while its
+    exact date is unconfirmed - this must serialize as JSON ``null``, never a
+    guessed/substituted date such as the tournament's start date."""
+
+    match = MatchResult(
+        opponent="Opponent",
+        tournament="Test Open",
+        round="Final",
+        score="6-4 6-4",
+        won=True,
+        match_date=None,
+    )
+    data = match.to_dict()
+    assert data["date"] is None
+
+    restored = MatchResult.from_dict(data)
+    assert restored.match_date is None
+    assert restored == match
+
+
 def test_player_report_round_trip_with_match() -> None:
     match = MatchResult(
         opponent="Opponent",
@@ -53,6 +74,35 @@ def test_player_report_round_trip_with_match() -> None:
     assert restored.match == match
     assert restored.played is True
     assert restored.won is True
+
+
+def test_player_report_round_trip_with_match_but_unconfirmed_date() -> None:
+    match = MatchResult(
+        opponent="Opponent",
+        tournament="Test Open",
+        round="Final",
+        score="6-4 6-4",
+        won=True,
+        match_date=None,
+    )
+    report = PlayerReport(
+        rank=3,
+        name="Unconfirmed Date Player",
+        player_id="p3",
+        country_code="ITA",
+        points=4500,
+        movement=Movement.SAME,
+        previous_rank=3,
+        match=match,
+    )
+    data = report.to_dict()
+    assert data["match_date"] is None
+    assert data["opponent"] == "Opponent"  # the rest of the match is still reported
+
+    restored = PlayerReport.from_dict(data)
+    assert restored.played is True
+    assert restored.match is not None
+    assert restored.match.match_date is None
 
 
 def test_player_report_round_trip_without_match() -> None:
@@ -101,3 +151,12 @@ def test_movement_arrow_labels() -> None:
     assert Movement.DOWN.arrow == "\u2193"
     assert Movement.SAME.arrow == "\u2014"
     assert Movement.NEW.arrow == "NEW"
+    assert Movement.UNKNOWN.arrow == "?"
+
+
+def test_movement_new_and_unknown_are_distinct_values() -> None:
+    """These must never be conflated - see Movement's docstring."""
+
+    assert Movement.NEW != Movement.UNKNOWN
+    assert Movement.NEW.value == "new"
+    assert Movement.UNKNOWN.value == "unknown"

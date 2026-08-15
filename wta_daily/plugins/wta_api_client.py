@@ -50,9 +50,43 @@ class WtaOfficialApiClient:
         return data
 
     def get_player_matches(self, player_id: str, *, page_size: int = 25) -> list[dict[str, Any]]:
+        """Return a player's match history, most recent first.
+
+        Ordering (``sort=desc``) reflects genuine chronology reasonably well
+        (verified empirically - later rounds of a tournament consistently
+        come back before earlier rounds, and more recent tournaments before
+        older ones). The per-entry ``StartDate``/``tournament.startDate``
+        fields, however, are the *tournament's* start date repeated for
+        every round, not the date that specific match was played - see
+        :mod:`wta_daily.plugins.matches.wta_official` for how the real,
+        match-level date is recovered via :meth:`get_tournament_matches`.
+        """
+
         url = f"{self._base_url}/players/{player_id}/matches"
         data = self._http.get_json(url, params={"page": 0, "pageSize": page_size, "sort": "desc"})
         matches = data.get("matches", []) if isinstance(data, dict) else []
         if not isinstance(matches, list):
             raise ValueError(f"Unexpected matches response shape from {url}: {type(matches)!r}")
+        return matches
+
+    def get_tournament_matches(
+        self, tournament_group_id: int | str, year: int | str, *, page_size: int = 500
+    ) -> list[dict[str, Any]]:
+        """Return every match (singles and doubles, all rounds) for one tournament edition.
+
+        Unlike the per-player match history, each entry here carries a real
+        per-match ``MatchTimeStamp`` and a ``MatchState`` ("F" once the match
+        has actually finished), which is what makes this endpoint useful for
+        recovering an authoritative match date instead of a tournament start
+        date. In practice this endpoint appears to ignore ``pageSize`` and
+        just returns the whole tournament's match list in one response.
+        """
+
+        url = f"{self._base_url}/tournaments/{tournament_group_id}/{year}/matches"
+        data = self._http.get_json(url, params={"page": 0, "pageSize": page_size})
+        matches = data.get("matches", []) if isinstance(data, dict) else []
+        if not isinstance(matches, list):
+            raise ValueError(
+                f"Unexpected tournament-matches response shape from {url}: {type(matches)!r}"
+            )
         return matches

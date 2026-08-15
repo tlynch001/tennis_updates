@@ -33,6 +33,10 @@ rankings_provider:
 match_provider:
   provider: wta_official
   # lookback_matches: 25
+  # `wta_official` recovers each match's real, match-level date via a second
+  # (cached) lookup against the tournament-matches endpoint; if that can't
+  # be confirmed, report.json's "match_date" is null rather than a guess -
+  # see README.md's "Match-data reliability" section.
 
 # --- Networking (used by every HTTP-based provider) ----------------------
 network:

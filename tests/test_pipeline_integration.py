@@ -51,13 +51,21 @@ def test_pipeline_run_produces_all_phase1_artifacts(tmp_path: Path) -> None:
     assert report.errors == []
 
 
-def test_pipeline_marks_players_new_on_first_run(tmp_path: Path) -> None:
+def test_pipeline_marks_players_unknown_on_first_run(tmp_path: Path) -> None:
+    """First-ever run (no previous snapshot) must use 'unknown', never 'new'.
+
+    Regression test for the production incident where every established
+    Top 10 player was narrated as a brand new entrant purely because the
+    application itself had never run before.
+    """
+
     config = _make_config(tmp_path)
     pipeline = DailyPipeline(config)
 
     report = pipeline.run(date(2026, 8, 9))
 
-    assert all(p.movement.value == "new" for p in report.players)
+    assert all(p.movement.value == "unknown" for p in report.players)
+    assert all(p.previous_rank is None for p in report.players)
 
 
 def test_pipeline_computes_movement_on_second_run(tmp_path: Path) -> None:
@@ -66,8 +74,25 @@ def test_pipeline_computes_movement_on_second_run(tmp_path: Path) -> None:
     DailyPipeline(config).run(date(2026, 8, 8))
     report = DailyPipeline(config).run(date(2026, 8, 9))
 
-    # Same fixture data both days => ranks are unchanged => "same".
+    # Same fixture data both days => ranks are unchanged => "same", now that
+    # a real previous snapshot exists (as opposed to "unknown" on day one).
     assert all(p.movement.value == "same" for p in report.players)
+
+
+def test_pipeline_marks_genuine_new_entrant_when_snapshot_exists(tmp_path: Path) -> None:
+    """A player absent from a *real* previous snapshot is 'new', not 'unknown'."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 4
+    DailyPipeline(config).run(date(2026, 8, 8))  # snapshot only covers ranks 1-4
+
+    config.top_n = 5  # rank 5 was not part of yesterday's tracked snapshot
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    by_rank = {p.rank: p for p in report.players}
+    assert by_rank[5].movement.value == "new"
+    assert by_rank[5].previous_rank is None
+    assert by_rank[1].movement.value == "same"
 
 
 class _FlakyMatchProvider(MatchProvider):

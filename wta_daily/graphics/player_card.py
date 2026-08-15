@@ -19,6 +19,9 @@ _MOVEMENT_HEADLINE = {
     Movement.DOWN: "MOVED DOWN",
     Movement.SAME: "STAYED AT #{rank}",
     Movement.NEW: "NEW IN THE TOP {n}",
+    # No previous snapshot exists to compare against - state the fact
+    # neutrally rather than implying the player just arrived.
+    Movement.UNKNOWN: "CURRENTLY #{rank}",
 }
 
 
@@ -163,9 +166,12 @@ def _render(
             anchor="la",
         )
         match_date = player.match.match_date
+        date_label = (
+            f"{match_date:%B} {match_date.day}, {match_date.year}" if match_date else "Date unconfirmed"
+        )
         draw.text(
             (margin * 1.6, panel_top + height * 0.27),
-            f"{match_date:%B} {match_date.day}, {match_date.year}",
+            date_label,
             font=detail_font,
             fill=subtext_color,
             anchor="la",

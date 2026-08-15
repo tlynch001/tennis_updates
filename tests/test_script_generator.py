@@ -4,6 +4,7 @@ from datetime import date
 
 from wta_daily.config import ScriptConfig
 from wta_daily.models import DailyReport, MatchResult, Movement, PlayerReport
+from wta_daily.scripts_gen import phrases
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
 
 
@@ -100,3 +101,60 @@ def test_generate_respects_target_length_padding() -> None:
     # With an unreachable target (20 minutes for 1 player), the generator
     # should still terminate and add its filler note rather than looping.
     assert "ranking points reflect performance" in script
+
+
+def _last_nonblank_paragraph(script: str) -> str:
+    paragraphs = [p for p in script.split("\n\n") if p.strip()]
+    return paragraphs[-1]
+
+
+def test_sign_off_is_the_actual_last_paragraph() -> None:
+    """Regression test: the closer must be the literal end of the script,
+    not followed by unrelated filler/context (as happened in production)."""
+
+    report = _sample_report([Movement.SAME, Movement.UP, Movement.DOWN])
+    script = TemplateScriptGenerator().generate(report)
+
+    last_paragraph = _last_nonblank_paragraph(script)
+    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    assert last_paragraph in possible_closers
+
+
+def test_sign_off_is_last_even_when_padding_is_added() -> None:
+    """The length-padding filler must be inserted *before* the sign-off, never after."""
+
+    config = ScriptConfig(target_minutes_low=20, words_per_minute=150)
+    report = _sample_report([Movement.SAME])
+    script = TemplateScriptGenerator(script_config=config).generate(report)
+
+    assert "ranking points reflect performance" in script
+    last_paragraph = _last_nonblank_paragraph(script)
+    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    assert last_paragraph in possible_closers
+    # The filler text must appear strictly before the sign-off in the script.
+    assert script.index("ranking points reflect performance") < script.index(last_paragraph)
+
+
+def test_unknown_movement_never_uses_new_entrant_language() -> None:
+    """First-ever run (no previous snapshot): narration must stay neutral.
+
+    Regression test for the production incident where every established
+    Top 10 player was described with "new face"/"debut"/"enters the Top N"
+    language purely because the application had never run before.
+    """
+
+    report = _sample_report([Movement.UNKNOWN] * 10)
+    script = TemplateScriptGenerator().generate(report)
+
+    forbidden_phrases = ["new face", "debut", "enters the top", "breaks into"]
+    lowered = script.lower()
+    for phrase in forbidden_phrases:
+        assert phrase not in lowered, f"Unexpected new-entrant language for report: {phrase!r}"
+
+
+def test_unknown_movement_still_mentions_current_rank() -> None:
+    report = _sample_report([Movement.UNKNOWN, Movement.UNKNOWN])
+    script = TemplateScriptGenerator().generate(report)
+
+    for player in report.players:
+        assert player.name in script

@@ -27,10 +27,20 @@ _SYSTEM_PROMPT = (
     "YouTube video covering the WTA Top N rankings. Write natural, conversational, "
     "broadcast-quality prose (not bullet points, not markdown). Mention a ranking change "
     "only when it actually happened; otherwise say the player 'remains' at her rank. "
+    "The 'movement' field for each player is one of up/down/same/new/unknown. Treat "
+    "'unknown' very differently from 'new': 'unknown' means there is no previous "
+    "ranking on record to compare against (e.g. this is the first report ever produced), "
+    "so you must NOT say the player is new, just entered, or debuting in the Top N - "
+    "simply state her current rank neutrally (e.g. 'sits at number 4 today'). Only use "
+    "'new'/'entered'/'debut' language when movement is literally 'new'. "
     "For every player, mention whether they won or lost their most recent match, the "
-    "opponent, tournament, round, and score when available. Avoid repeating the same "
-    "sentence structure twice in a row. Keep the whole script long enough to read aloud "
-    "in about the requested number of minutes."
+    "opponent, tournament, round, and score when available; if no match information is "
+    "available, say so plainly rather than guessing. Avoid repeating the same sentence "
+    "structure twice in a row. Keep the whole script long enough to read aloud in about "
+    "the requested number of minutes. End the script with a single, clear sign-off line "
+    "(e.g. thanking viewers and mentioning you'll be back tomorrow) - that sign-off must "
+    "be the very last line of the script, with no further commentary, statistics, or "
+    "caveats added after it."
 )
 
 

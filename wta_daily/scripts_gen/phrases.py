@@ -62,6 +62,17 @@ MOVEMENT_NEW: list[str] = [
     "is a new face inside the Top {n}, arriving at number {rank}",
 ]
 
+# Used only when there is no previous snapshot at all to compare against
+# (typically the application's first-ever run for a tour). Deliberately
+# neutral - it must never imply the player just arrived in the Top N, since
+# on a baseline run every player looks "new" purely for lack of history.
+MOVEMENT_UNKNOWN: list[str] = [
+    "sits at number {rank} in today's rankings",
+    "is ranked number {rank} today",
+    "comes in at number {rank}",
+    "holds down the number {rank} spot today",
+]
+
 MATCH_WIN: list[str] = [
     "defeated {opponent} {score} in the {round} at {tournament}",
     "got past {opponent} {score} to advance through the {round} at {tournament}",
