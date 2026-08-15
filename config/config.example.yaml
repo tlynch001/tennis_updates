@@ -31,12 +31,31 @@ rankings_provider:
   # metric: singles
 
 match_provider:
-  provider: wta_official
-  # lookback_matches: 25
-  # `wta_official` recovers each match's real, match-level date via a second
-  # (cached) lookup against the tournament-matches endpoint; if that can't
-  # be confirmed, report.json's "match_date" is null rather than a guess -
-  # see README.md's "Match-data reliability" section.
+  # `best_of` queries every source below for each player and keeps whichever
+  # result has the most recently CONFIRMED match date, isolating failures per
+  # source (one source erroring never blocks another). This is the
+  # recommended default: `wta_official` (free) can lag real-world results by
+  # over a week during a live event, and `live_tennis_api` (paid) is usually
+  # fresher but has its own per-player coverage gaps (verified live - see
+  # README.md's "Match-data reliability" section) - combining them is more
+  # reliable than trusting either alone.
+  provider: best_of
+  sources:
+    - provider: wta_official
+      # lookback_matches: 25
+    - provider: live_tennis_api
+      # lookback_matches: 20
+      # api_key_env: LIVETENNISAPI_KEY   # resolved from the environment/.env - never put the key here
+  #
+  # To use only the free official source (no API key needed, no paid
+  # dependency), replace the whole block above with:
+  #   match_provider:
+  #     provider: wta_official
+  #
+  # To use only the paid source:
+  #   match_provider:
+  #     provider: live_tennis_api
+  #     api_key_env: LIVETENNISAPI_KEY
 
 # --- Networking (used by every HTTP-based provider) ----------------------
 network:
