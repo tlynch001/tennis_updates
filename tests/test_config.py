@@ -61,6 +61,55 @@ def test_load_config_reads_rankings_pool_size(tmp_path: Path) -> None:
     assert config.rankings_pool_size == 50
 
 
+def test_featured_player_disabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.featured_player.enabled is False
+    assert config.featured_player.tagline == "america_favorite"
+
+
+def test_featured_player_reads_full_block(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "featured_player:\n"
+        "  enabled: true\n"
+        "  player_id: '325410'\n"
+        "  name: Emma Navarro\n"
+        "  tagline: america_favorite\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.featured_player.enabled is True
+    assert config.featured_player.player_id == "325410"
+    assert config.featured_player.name == "Emma Navarro"
+    assert config.featured_player.tagline == "america_favorite"
+
+
+def test_featured_player_enabled_without_player_id_raises(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "featured_player:\n  enabled: true\n  name: Emma Navarro\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigurationError):
+        load_config(config_path)
+
+
+def test_featured_player_enabled_without_name_raises(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "featured_player:\n  enabled: true\n  player_id: '325410'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigurationError):
+        load_config(config_path)
+
+
 def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

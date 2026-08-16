@@ -22,33 +22,13 @@ and can be swapped in purely via configuration once an API key is available.
 from __future__ import annotations
 
 import random
-from collections.abc import Iterable
 
 from wta_daily.config import ScriptConfig
 from wta_daily.models import DailyReport, Movement, PlayerReport
 from wta_daily.plugins.base import ScriptGenerator
 from wta_daily.plugins.registry import script_registry
-from wta_daily.scripts_gen import phrases
-
-
-class _PhraseCycler:
-    """Yields phrases from a shuffled pool, reshuffling once exhausted.
-
-    Reshuffling (rather than reusing simple round-robin order) means the
-    *order* of repeats also varies day to day, while still guaranteeing every
-    phrase in the pool gets used before any phrase repeats.
-    """
-
-    def __init__(self, phrase_pool: Iterable[str], rng: random.Random) -> None:
-        self._phrases = list(phrase_pool)
-        self._rng = rng
-        self._remaining: list[str] = []
-
-    def next(self) -> str:
-        if not self._remaining:
-            self._remaining = list(self._phrases)
-            self._rng.shuffle(self._remaining)
-        return self._remaining.pop()
+from wta_daily.scripts_gen import featured_player, phrases
+from wta_daily.scripts_gen.phrase_utils import PhraseCycler as _PhraseCycler
 
 
 @script_registry.register("template")
@@ -88,8 +68,25 @@ class TemplateScriptGenerator(ScriptGenerator):
         body = "\n\n".join(body_paragraphs)
         body = self._pad_to_target_length(body, cyclers, rng)
 
+        # The featured-player segment (if configured) always runs after the
+        # legitimate Top N coverage and before the final sign-off - never
+        # the other way around. Reuses the same per-run `rng` so its
+        # wording still varies day to day, but only ever draws from it when
+        # the segment actually exists, so a report with no featured player
+        # (the default) produces byte-identical output to before this
+        # feature existed.
+        segment = (
+            featured_player.build_segment(report.featured_player, top_n=n, rng=rng)
+            if report.featured_player is not None
+            else None
+        )
+
         closer = rng.choice(phrases.CLOSERS).format(n=n)
-        return f"{body}\n\n{closer}"
+        parts = [body]
+        if segment:
+            parts.append(segment)
+        parts.append(closer)
+        return "\n\n".join(parts)
 
     def _player_paragraph(
         self,

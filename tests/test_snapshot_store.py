@@ -79,6 +79,55 @@ def test_save_snapshot_overwrites_existing_entry_for_same_day(tmp_path: Path) ->
     assert history[0]["rankings"][0]["rank"] == 5
 
 
+def test_get_previous_player_rank_from_tracked_history(tmp_path: Path) -> None:
+    store = RankingsSnapshotStore(tmp_path)
+    store.save_snapshot(date(2026, 8, 15), "wta", [_ranking(1, "a"), _ranking(2, "b")])
+
+    assert store.get_previous_player_rank(date(2026, 8, 16), "wta", "b") == 2
+
+
+def test_get_previous_player_rank_from_featured_players(tmp_path: Path) -> None:
+    """A player tracked outside the top_n group (e.g. a featured player who
+    isn't currently in the Top N) must still get a previous-rank lookup, so
+    her movement can be computed the same way as anyone else's."""
+
+    store = RankingsSnapshotStore(tmp_path)
+    store.save_snapshot(
+        date(2026, 8, 15),
+        "wta",
+        [_ranking(1, "a")],
+        featured_players={"emma": _ranking(28, "emma")},
+    )
+
+    assert store.get_previous_player_rank(date(2026, 8, 16), "wta", "emma") == 28
+    assert store.get_previous_player_rank(date(2026, 8, 16), "wta", "a") == 1
+
+
+def test_get_previous_player_rank_none_when_never_tracked(tmp_path: Path) -> None:
+    store = RankingsSnapshotStore(tmp_path)
+    store.save_snapshot(date(2026, 8, 15), "wta", [_ranking(1, "a")])
+
+    assert store.get_previous_player_rank(date(2026, 8, 16), "wta", "never-tracked") is None
+
+
+def test_get_previous_player_rank_none_when_no_history_at_all(tmp_path: Path) -> None:
+    store = RankingsSnapshotStore(tmp_path)
+
+    assert store.get_previous_player_rank(date(2026, 8, 16), "wta", "anyone") is None
+
+
+def test_save_snapshot_without_featured_players_omits_the_key(tmp_path: Path) -> None:
+    """Calling save_snapshot the old way (no featured_players) must not add
+    an empty key to the history entry - keeps existing history files'
+    shape stable when the feature is disabled."""
+
+    store = RankingsSnapshotStore(tmp_path)
+    store.save_snapshot(date(2026, 8, 15), "wta", [_ranking(1, "a")])
+
+    history = store.load_history()
+    assert "featured_players" not in history[0]
+
+
 def test_update_players_cache_accepts_a_wider_group_than_the_history(tmp_path: Path) -> None:
     """A wider rankings pool (e.g. Top 25 fetched alongside a Top 10 report,
     in the same single API request) can safely enrich the player-metadata

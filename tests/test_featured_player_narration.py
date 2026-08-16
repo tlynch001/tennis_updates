@@ -1,0 +1,248 @@
+"""Unit tests for :mod:`wta_daily.scripts_gen.featured_player`.
+
+Exercises the narration-building logic in isolation from the rest of the
+script generator: rank-tier framing (pursuit / arrived / world No. 1),
+movement flavor, match-result integration, and the variation/repetition
+requirements from the feature brief.
+"""
+
+from __future__ import annotations
+
+import random
+from datetime import date
+
+from wta_daily.models import FeaturedPlayerReport, MatchResult, Movement
+from wta_daily.scripts_gen.featured_player import build_segment
+
+TOP_N = 10
+
+
+def _match(*, won: bool, opponent: str = "Some Opponent", score: str = "6-4 6-3") -> MatchResult:
+    return MatchResult(
+        opponent=opponent,
+        tournament="Cincinnati",
+        round="Round of 32",
+        score=score,
+        won=won,
+        match_date=date(2026, 8, 15),
+    )
+
+
+def _featured(**overrides: object) -> FeaturedPlayerReport:
+    defaults: dict[str, object] = {
+        "name": "Emma Navarro",
+        "player_id": "325410",
+        "tagline": "america_favorite",
+        "country_code": "USA",
+        "rank": 28,
+        "points": 1669,
+        "movement": Movement.SAME,
+        "previous_rank": 28,
+        "match": None,
+        "match_error": None,
+    }
+    defaults.update(overrides)
+    return FeaturedPlayerReport(**defaults)  # type: ignore[arg-type]
+
+
+def _rng(seed: str) -> random.Random:
+    return random.Random(seed)
+
+
+def test_returns_none_when_rank_is_unavailable() -> None:
+    """Never build a segment around a number we don't have."""
+
+    featured = _featured(rank=None, rank_error="network timeout")
+
+    assert build_segment(featured, top_n=TOP_N, rng=_rng("seed")) is None
+
+
+def test_outside_top_n_uses_pursuit_framing_not_arrived_language() -> None:
+    featured = _featured(rank=28)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-a"))
+
+    assert segment is not None
+    assert "Emma Navarro" in segment
+    assert "28" in segment
+    lowered = segment.lower()
+    for forbidden in ("officially arrived", "has officially arrived", "welcomes a name"):
+        assert forbidden not in lowered
+
+
+def test_never_makes_a_mathematically_specific_pursuit_claim() -> None:
+    """Regression test: the brief explicitly forbids claims like 'only two
+    wins away' unless the data actually supports them - this codebase never
+    computes or asserts such a claim, so no phrase pool should either."""
+
+    seen: set[str] = set()
+    for i in range(60):
+        featured = _featured(rank=28)
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"seed-{i}"))
+        assert segment is not None
+        seen.add(segment)
+
+    combined = " ".join(seen).lower()
+    for forbidden in ("wins away", "one win away", "two wins away", "just one win"):
+        assert forbidden not in combined
+
+
+def test_inside_top_n_uses_arrived_framing_not_pursuit_language() -> None:
+    featured = _featured(rank=8, previous_rank=11, movement=Movement.NEW)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-b"))
+
+    assert segment is not None
+    lowered = segment.lower()
+    for forbidden in ("climb back toward", "keeping a seat warm", "still lurking"):
+        assert forbidden not in lowered
+
+
+def test_number_one_drops_the_official_vs_unofficial_distinction() -> None:
+    featured = _featured(rank=1, previous_rank=2, movement=Movement.UP)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-c"))
+
+    assert segment is not None
+    assert "number one" in segment.lower()
+    # The "#1 in our hearts" contrast no longer makes sense once she's
+    # genuinely No. 1 - it must never appear for this rank.
+    assert "unofficially" not in segment.lower()
+
+
+def test_number_one_never_gets_the_hearts_joke_even_across_many_seeds() -> None:
+    for i in range(40):
+        featured = _featured(rank=1, previous_rank=1, movement=Movement.SAME)
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"hearts-check-{i}"))
+        assert segment is not None
+        assert "unofficially" not in segment.lower()
+
+
+def test_win_mentions_real_opponent_score_and_tournament() -> None:
+    featured = _featured(rank=28, match=_match(won=True, opponent="Iga Swiatek", score="7-6 6-4"))
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-win"))
+
+    assert segment is not None
+    assert "Iga Swiatek" in segment
+    assert "7-6 6-4" in segment
+    assert "Cincinnati" in segment
+
+
+def test_loss_states_the_real_result_and_does_not_pretend_she_won() -> None:
+    featured = _featured(rank=28, match=_match(won=False, opponent="Coco Gauff", score="4-6 3-6"))
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-loss"))
+
+    assert segment is not None
+    assert "Coco Gauff" in segment
+    assert "4-6 3-6" in segment
+
+
+def test_loss_never_claims_a_win() -> None:
+    for i in range(30):
+        featured = _featured(rank=28, match=_match(won=False, opponent="Someone", score="1-6 2-6"))
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"loss-{i}"))
+        assert segment is not None
+        # Every win-phrase template mentions "getting past"/"came through"/
+        # "took care of"/"beat" - none of those verbs should appear when
+        # she actually lost.
+        lowered = segment.lower()
+        for win_verb in ("getting past", "came through against", "took care of", " beat "):
+            assert win_verb not in lowered
+
+
+def test_no_match_does_not_invent_a_result() -> None:
+    featured = _featured(rank=28, match=None)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-no-match"))
+
+    assert segment is not None
+    lowered = segment.lower()
+    assert "day off" in lowered or "no match" in lowered or "quiet day" in lowered or "rest day" in lowered
+    assert "cincinnati" not in lowered  # no tournament fabricated without a real match
+
+
+def test_match_error_does_not_guess_a_result() -> None:
+    featured = _featured(rank=28, match=None, match_error="all match sources failed")
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-match-error"))
+
+    assert segment is not None
+    lowered = segment.lower()
+    assert "confirmed" in lowered
+    assert "cincinnati" not in lowered
+
+
+def test_movement_up_and_down_are_reflected_honestly() -> None:
+    up_segment = build_segment(_featured(rank=28, movement=Movement.UP), top_n=TOP_N, rng=_rng("up"))
+    down_segment = build_segment(
+        _featured(rank=28, movement=Movement.DOWN), top_n=TOP_N, rng=_rng("down")
+    )
+
+    assert up_segment is not None and down_segment is not None
+    up_words = ("climbing", "on the move", "picking up ground", "trending", "making up ground")
+    down_words = ("step back", "for the moment", "down slightly", "easing back")
+    assert any(w in up_segment.lower() for w in up_words)
+    assert any(w in down_segment.lower() for w in down_words)
+
+
+def test_unknown_movement_never_uses_new_entrant_language() -> None:
+    """Same safety rule as the official Top N: a first-ever run (no prior
+    snapshot) must not claim she's 'new' or 'freshly tracked'."""
+
+    featured = _featured(rank=28, movement=Movement.UNKNOWN, previous_rank=None)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-unknown"))
+
+    assert segment is not None
+    lowered = segment.lower()
+    for forbidden in ("newly back", "freshly tracked", "back on the board"):
+        assert forbidden not in lowered
+
+
+def test_segment_appears_in_1_to_3_sentences() -> None:
+    """Tone requirement: this is a quick inside joke, not a comedy routine."""
+
+    featured = _featured(rank=28, match=_match(won=True))
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-length"))
+
+    assert segment is not None
+    sentence_count = segment.count(". ") + 1
+    assert 1 <= sentence_count <= 4  # small tolerance for embedded abbreviations/scores
+
+
+def test_unrecognized_tagline_still_produces_a_segment() -> None:
+    """A future featured player with an unrecognized tagline should still
+    get a (default) segment rather than silently producing nothing."""
+
+    featured = _featured(rank=28, tagline="totally_unknown_tagline")
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("seed-unknown-tagline"))
+
+    assert segment is not None
+
+
+def test_produces_substantial_variation_across_many_days() -> None:
+    """The core anti-repetition requirement: running the same underlying
+    data through many different day-seeds must not produce one canned
+    paragraph over and over."""
+
+    featured = _featured(rank=28, movement=Movement.SAME, match=_match(won=True))
+    outputs = {
+        build_segment(featured, top_n=TOP_N, rng=_rng(f"2026-08-{day:02d}")) for day in range(1, 29)
+    }
+
+    # 28 distinct day-seeds should produce well more than a couple of
+    # unique paragraphs if the phrase pools are doing their job.
+    assert len(outputs) >= 15
+
+
+def test_hearts_joke_appears_sometimes_but_not_every_day() -> None:
+    featured = _featured(rank=14, movement=Movement.SAME)
+    segments = [
+        build_segment(featured, top_n=TOP_N, rng=_rng(f"hearts-{i}")) for i in range(60)
+    ]
+    hearts_count = sum(1 for s in segments if s and "unofficially" in s.lower())
+
+    assert 0 < hearts_count < len(segments)

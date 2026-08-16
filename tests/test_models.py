@@ -4,6 +4,7 @@ from datetime import date
 
 from wta_daily.models import (
     DailyReport,
+    FeaturedPlayerReport,
     MatchLookupResult,
     MatchResult,
     Movement,
@@ -188,6 +189,101 @@ def test_movement_new_and_unknown_are_distinct_values() -> None:
     assert Movement.NEW != Movement.UNKNOWN
     assert Movement.NEW.value == "new"
     assert Movement.UNKNOWN.value == "unknown"
+
+
+def test_featured_player_report_round_trip_with_match() -> None:
+    match = MatchResult(
+        opponent="Opponent",
+        tournament="Cincinnati",
+        round="Round of 32",
+        score="6-4 6-2",
+        won=True,
+        match_date=date(2026, 8, 15),
+    )
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        country_code="USA",
+        rank=14,
+        points=1800,
+        movement=Movement.UP,
+        previous_rank=16,
+        match=match,
+    )
+    restored = FeaturedPlayerReport.from_dict(featured.to_dict())
+
+    assert restored.name == "Emma Navarro"
+    assert restored.rank == 14
+    assert restored.movement == Movement.UP
+    assert restored.match == match
+    assert restored.played is True
+    assert restored.won is True
+
+
+def test_featured_player_report_without_rank_is_not_fabricated() -> None:
+    """When the rank couldn't be determined this run, `played`/`won` must
+    stay unknown rather than defaulting to a guessed value."""
+
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        rank_error="network timeout",
+    )
+    data = featured.to_dict()
+
+    assert data["rank"] is None
+    assert data["played"] is None
+    assert data["won"] is None
+    assert data["rank_error"] == "network timeout"
+
+    restored = FeaturedPlayerReport.from_dict(data)
+    assert restored.rank is None
+    assert restored.played is None
+
+
+def test_featured_player_report_no_match_is_a_confirmed_false_not_none() -> None:
+    """A known rank but no match on the target date means `played: false` -
+    distinct from an unknown rank, where `played` is `None`."""
+
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro", player_id="325410", tagline="america_favorite", rank=28
+    )
+    data = featured.to_dict()
+
+    assert data["rank"] == 28
+    assert data["played"] is False
+    assert data["won"] is None
+
+
+def test_daily_report_round_trip_includes_featured_player() -> None:
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro", player_id="325410", tagline="america_favorite", rank=14, points=1800
+    )
+    report = DailyReport(
+        report_date=date(2026, 8, 16),
+        tour="wta",
+        players=[],
+        featured_player=featured,
+    )
+    data = report.to_dict()
+    assert data["featured_player"]["name"] == "Emma Navarro"
+
+    restored = DailyReport.from_dict(data)
+    assert restored.featured_player is not None
+    assert restored.featured_player.rank == 14
+
+
+def test_daily_report_featured_player_defaults_to_none() -> None:
+    """Old report.json files (or the feature simply disabled) must load fine."""
+
+    legacy_data = {"date": "2026-08-09", "tour": "wta", "players": [], "errors": []}
+
+    restored = DailyReport.from_dict(legacy_data)
+
+    assert restored.featured_player is None
+    assert restored.to_dict()["featured_player"] is None
 
 
 def test_match_lookup_result_defaults_to_empty() -> None:
