@@ -19,6 +19,14 @@ data_dir: data
 output_dir: output
 log_dir: logs
 
+# How many days before the run date counts as "the day we're reporting
+# match results for" (1 = yesterday, UTC calendar day). A player with no
+# CONFIRMED completed match on this exact date is reported as
+# `played: false` in report.json - the pipeline never substitutes an older
+# match. See README.md's "Match-data reliability" section for why this
+# replaced a per-player "latest known match regardless of date" approach.
+match_target_date_offset_days: 1
+
 # --- Data providers -----------------------------------------------------
 # `provider` selects a registered plugin by name (see
 # wta_daily/plugins/registry.py). Everything else in each block is passed
@@ -31,33 +39,40 @@ rankings_provider:
   # metric: singles
 
 match_provider:
-  # `best_of` queries every source below for each player and keeps whichever
-  # result has the most recently CONFIRMED match date, isolating failures per
-  # source (one source erroring never blocks another). This is the
-  # recommended default: `wta_official` (free) can lag real-world results by
-  # over a week during a live event, and `live_tennis_api` (paid) is usually
-  # fresher but has its own per-player coverage gaps (verified live - see
-  # README.md's "Match-data reliability" section) - combining them is more
-  # reliable than trusting either alone.
+  # `best_of` asks every source below "did each of these players complete a
+  # match on this exact date", trying sources in order and isolating
+  # failures per source (one source erroring never blocks another) - the
+  # first source to confirm a player's match wins; a player not found by any
+  # source is reported as `played: false`. This is the recommended default:
+  # `wta_official`'s per-player history (used by get_latest_match) can lag
+  # real-world results by over a week during a live event, but its
+  # tournament-level day-first lookup (get_matches_for_date) is near-real-time
+  # - confirmed live against the WTA's own site, which is built on the same
+  # backend. `live_tennis_api` (paid) is a good second source but has its own
+  # per-player coverage gaps (verified live - see README.md's "Match-data
+  # reliability" section).
   provider: best_of
   sources:
     - provider: wta_official
       # lookback_matches: 25
+      # catalogue_scan_pages: 25   # how many ~100-entry pages of the tournament catalogue to scan for "active this week"
     - provider: live_tennis_api
       # lookback_matches: 20
       # api_key_env: LIVETENNISAPI_KEY   # resolved from the environment/.env - never put the key here
   #
-  # A third paid source (api_tennis, api-tennis.com) is also implemented
-  # and available, but deliberately NOT included above by default: live
-  # testing found ~4 of 10 players' latest match dates one calendar day
-  # later than the same matches' dates independently confirmed via the two
-  # sources above - `best_of` prefers the most recent date, so adding this
-  # source can make it pick that slightly-wrong date over a more accurate
-  # one. Its rankings data and overall match coverage were excellent (in
-  # fact more complete than live_tennis_api for one player); see the
-  # README's "Match-data reliability" section for the full comparison. Add
-  # it if you want maximum redundancy and are comfortable with that
-  # tradeoff, or as a replacement for live_tennis_api if you don't have a
+  # A third paid source (api_tennis, api-tennis.com) is also implemented and
+  # available, but not included above by default: live testing found ~4 of
+  # 10 players' match dates one calendar day later than the same matches'
+  # dates confirmed via the two sources above. Because get_matches_for_date
+  # only accepts a source's result when its date exactly matches the target
+  # day, this drift mostly makes api_tennis silently miss those matches
+  # rather than report a wrong one - safer than it would have been under the
+  # old "prefer the most recent date across sources" logic, but still not
+  # a source worth defaulting to. Its rankings data and overall match
+  # coverage were otherwise excellent (in fact more complete than
+  # live_tennis_api for one player); see the README's "Match-data
+  # reliability" section for the full comparison. Add it if you want maximum
+  # redundancy, or as a replacement for live_tennis_api if you don't have a
   # livetennisapi.com key:
   #   - provider: api_tennis
   #     # lookback_days: 45

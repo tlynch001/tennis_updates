@@ -138,12 +138,33 @@ def test_daily_report_round_trip() -> None:
             )
         ],
         errors=["something minor"],
+        match_target_date=date(2026, 8, 8),
     )
-    restored = DailyReport.from_dict(report.to_dict())
+    data = report.to_dict()
+    assert data["match_target_date"] == "2026-08-08"
+
+    restored = DailyReport.from_dict(data)
     assert restored.report_date == report.report_date
     assert restored.tour == "wta"
     assert len(restored.players) == 1
     assert restored.errors == ["something minor"]
+    assert restored.match_target_date == date(2026, 8, 8)
+
+
+def test_daily_report_match_target_date_defaults_to_none_for_old_reports() -> None:
+    """report.json files written before this field existed must still load."""
+
+    legacy_data = {
+        "date": "2026-08-09",
+        "tour": "wta",
+        "players": [],
+        "errors": [],
+    }
+
+    restored = DailyReport.from_dict(legacy_data)
+
+    assert restored.match_target_date is None
+    assert restored.to_dict()["match_target_date"] is None
 
 
 def test_movement_arrow_labels() -> None:

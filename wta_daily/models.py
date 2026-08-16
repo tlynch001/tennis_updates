@@ -210,26 +210,41 @@ class PlayerReport:
 
 @dataclass
 class DailyReport:
-    """The complete, self-contained result of one day's pipeline run."""
+    """The complete, self-contained result of one day's pipeline run.
+
+    ``match_target_date`` is the specific calendar date (UTC) that
+    ``players[*].match`` answers "did she play on this day" for - not
+    necessarily the same as ``report_date`` (the day the job ran/the video
+    covers). A player with ``match is None`` did not have a confirmed
+    completed match on ``match_target_date``; nothing is ever substituted
+    from an earlier date. ``None`` here only for reports produced before
+    this field existed.
+    """
 
     report_date: date
     tour: str
     players: list[PlayerReport] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    match_target_date: date | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "date": self.report_date.isoformat(),
             "tour": self.tour,
+            "match_target_date": (
+                self.match_target_date.isoformat() if self.match_target_date else None
+            ),
             "players": [p.to_dict() for p in self.players],
             "errors": self.errors,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DailyReport:
+        raw_target_date = data.get("match_target_date")
         return cls(
             report_date=date.fromisoformat(data["date"]),
             tour=data.get("tour", "wta"),
             players=[PlayerReport.from_dict(p) for p in data.get("players", [])],
             errors=list(data.get("errors", [])),
+            match_target_date=date.fromisoformat(raw_target_date) if raw_target_date else None,
         )

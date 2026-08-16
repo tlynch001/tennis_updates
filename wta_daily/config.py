@@ -237,6 +237,13 @@ class AppConfig:
     data_dir: Path = Path("data")
     output_dir: Path = Path("output")
     log_dir: Path = Path("logs")
+    #: How many days before `report_date` counts as "the day we're reporting
+    #: results for" (1 = yesterday, UTC). Matches are looked up for exactly
+    #: this date - a player who didn't play that day is reported as
+    #: `played: false`, never substituted with an older result. See the
+    #: README's "Match-data reliability" section for why this replaced a
+    #: per-player "latest known match regardless of date" approach.
+    match_target_date_offset_days: int = 1
     rankings_provider: ProviderConfig = field(
         default_factory=lambda: ProviderConfig(name="wta_official")
     )
@@ -260,6 +267,9 @@ class AppConfig:
             data_dir=Path(data.get("data_dir", defaults.data_dir)),
             output_dir=Path(data.get("output_dir", defaults.output_dir)),
             log_dir=Path(data.get("log_dir", defaults.log_dir)),
+            match_target_date_offset_days=int(
+                data.get("match_target_date_offset_days", defaults.match_target_date_offset_days)
+            ),
             rankings_provider=ProviderConfig.from_mapping(
                 data.get("rankings_provider"), default_name="wta_official"
             ),

@@ -220,7 +220,103 @@ with that risk, e.g. as a `live_tennis_api` replacement if you don't have
 a key for that service. Covered by
 [`tests/test_api_tennis_match_provider.py`](tests/test_api_tennis_match_provider.py).
 Its API key is resolved from `APITENNIS_KEY` (`api_key_env` in config) -
-never hardcoded.
+never hardcoded. (Note: `get_matches_for_date`, described next, only
+accepts a source's result when its date matches the target day exactly, so
+this drift now mostly makes `api_tennis` silently miss a match rather than
+report a wrong one - safer than it would have been before, but still not
+a reason to default to it.)
+
+### From "her latest match" to "did she play yesterday" (day-first matching)
+
+A second production run exposed a deeper problem than the tournament-date
+bug above: even with a correct date, `wta_official`'s per-player history
+endpoint (`GET /players/{id}/matches`) can lag the *current* tournament
+week by several days. Confirmed live: three Top 10 players had already won
+a second-round match at that week's tournament while this endpoint still
+showed nothing past the *previous* week's event for any of them - so asking
+"what's her latest match" answered with a real, correctly-dated, but
+substantively **stale** result once the report is meant to be about a
+specific day (e.g. "yesterday").
+
+Investigated and ruled out as a fix for this specific problem: the official
+[`developers.wtatennis.com`](https://developers.wtatennis.com) portal
+(JS app behind a login wall requiring Microsoft SSO or a pre-issued
+"Subscription ID" - no public signup found, not pursued further per "don't
+bypass access controls"). What *did* solve it: the WTA's own live-scores
+page turns out to be built on the exact same `api.wtatennis.com` backend
+already in use here - confirmed directly from the site's own frontend
+config (`"api": "https://api.wtatennis.com"`) - just read through a
+different, near-real-time endpoint (the tournament-level one, already used
+above for date recovery) instead of the slow per-player one.
+
+**The fix: flip the query direction.** Instead of *"for each Top N player,
+what's her latest match"* (player-first), the pipeline now asks *"which
+matches finished on this exact date, and which of them involve a Top N
+player"* (day-first):
+
+1. `MatchProvider.get_matches_for_date(players, target_date)` is the new
+   primary interface method (see `wta_daily/plugins/base.py`) -
+   `get_latest_match` still exists (some providers/tests still use it, and
+   it has a real, different meaning - "whatever this provider's most recent
+   *known* result is, regardless of date"), but the pipeline no longer calls
+   it directly.
+2. `WtaOfficialMatchProvider.get_matches_for_date` scans the tournament
+   catalogue for events active on the target date (there's no working
+   date filter on that endpoint, so this pages through the *last* ~25
+   pages of the ~19,000-entry, roughly-chronological catalogue - the
+   current season is always near the end, and this is a few seconds of
+   work once per run, not per player), fetches each active tournament's
+   full match list, and keeps only genuinely finished (`MatchState: "F"`)
+   singles matches whose real per-fixture timestamp falls on that exact
+   UTC calendar day. A player absent from the result gets `played: false`
+   - **nothing ever falls back to an older match.**
+3. `MatchProvider`'s default `get_matches_for_date` (used by `sample`,
+   `live_tennis_api`, `api_tennis`, which don't have a day-indexed lookup
+   of their own) falls back to `get_latest_match` per player, keeping the
+   result only if its date exactly equals the target date - honest (never
+   claims a wrong date), but can under-report a match that source's
+   per-player history hasn't caught up on yet. Only `wta_official`'s
+   override actually fixes the staleness; the others just avoid making it
+   worse.
+4. `BestOfMatchProvider.get_matches_for_date` tries every source in turn,
+   removing a player from consideration as soon as any source confirms a
+   match for them, and only raises if **every** source fails outright -
+   a player confidently absent from a source that itself completed without
+   error is reported as `played: false`, not as an error.
+5. `report.json` gained a top-level `match_target_date` field (the actual
+   UTC date being asked about - `report_date` minus
+   `match_target_date_offset_days`, default 1 = yesterday) so every
+   consumer (narration, graphics, and anyone reading the file later) knows
+   exactly what date `played`/`match` answer for.
+
+**Verified against a real historical date (August 14, 2026) with zero
+discrepancies against three independent sources** (BBC Sport, and two
+tennis-news outlets, cross-checked against the WTA's own scores page): on
+that date, none of the (then-)current Top 10 had played yet (seeded players
+get a first-round bye in a 96-draw event and start in Round 2) - the
+day-first lookup correctly reported `played: false` for all ten, and
+separately, correctly found three players' real wins the very next day,
+matching those same sources exactly (opponent, score, round, and date).
+
+One remaining, explicitly accepted tradeoff: a match found only through the
+day-first tournament scan (i.e. one the per-player endpoint hasn't caught
+up on yet) can't be cross-referenced against that endpoint's nicer
+`R16`/`Quarterfinal`-style round names, since there's nothing to
+cross-reference. Those matches get a plainer `"Main Draw Round 2"`-style
+label instead, built directly from the tournament feed's own fields -
+correct, just less polished until the per-player endpoint does catch up.
+Opponent, score, date, and win/loss are unaffected.
+
+**Timezone handling**: `MatchTimeStamp` is UTC (`+00:00`/`Z`) for finished
+matches, but the *same field* on not-yet-played fixtures in the same
+response can be in tournament **local** time with an explicit offset (e.g.
+`-04:00` for Cincinnati) - a genuine inconsistency in this API, and a
+plausible explanation for `api_tennis`'s date drift above. `_parse_timestamp`
+(`wta_daily/plugins/matches/wta_official.py`) always normalizes to UTC
+before taking the calendar date, and "yesterday" is defined project-wide as
+**UTC calendar yesterday relative to when the job runs** - deterministic
+and reproducible regardless of which tournament's timezone a match was
+actually played in.
 
 ## Player imagery: legal approach
 
@@ -317,6 +413,9 @@ Everything tunable lives in one YAML file - see the fully-commented
 `config/config.yaml` (git-ignored) before running. Highlights:
 
 - `top_n` - how many players to track (10 by default; flip to 25 any time).
+- `match_target_date_offset_days` - which day counts as "the day we're
+  reporting match results for" (1 = yesterday, UTC; see "From 'her latest
+  match' to 'did she play yesterday'" above).
 - `rankings_provider` / `match_provider` - `{provider: <name>, ...options}`;
   `<name>` is looked up in the plugin registry (see below).
 - `script.generator` - `template` (default, offline, free) or `openai`
@@ -368,7 +467,7 @@ CLI (wta_daily/cli.py)
   -> DailyPipeline.run()                wta_daily/pipeline.py
        1. RankingsProvider.get_top_n()          <- plugin: rankings_registry
        2. compute_movement() vs snapshot store  wta_daily/movement.py (UNKNOWN if no prior snapshot exists at all)
-       3. MatchProvider.get_latest_match() x N  <- plugin: matches_registry  (per-player try/except)
+       3. MatchProvider.get_matches_for_date()   <- plugin: matches_registry  (day-first batch call; a player absent from the result is played: false, never an older match)
        4. RankingsSnapshotStore.save_snapshot() wta_daily/persistence/snapshot_store.py
        5. DailyOutputStore.write_report()       wta_daily/persistence/report_store.py
        6. ScriptGenerator.generate()            <- plugin: script_registry
@@ -436,11 +535,22 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 
 ## Error handling & logging
 
-- **One player's failure never aborts the run.** `DailyPipeline._safe_get_latest_match`
-  catches any exception from the match provider per player, records it on
-  that player's `match_error` field (visible in `report.json`), appends it to
-  the report's `errors` list, logs it, and moves on to the next player. This
-  is covered by `tests/test_pipeline_integration.py::test_pipeline_continues_when_one_players_match_fails`.
+- **One player's failure never aborts the run.** `MatchProvider`'s default
+  `get_matches_for_date` (used by any source without a native day-indexed
+  lookup) isolates each player's `get_latest_match` call in its own
+  try/except; a player whose lookup fails simply doesn't appear in that
+  source's result (same as if she hadn't played - see "From 'her latest
+  match' to 'did she play yesterday'" above for why that's the honest
+  outcome for a per-item failure with no separate "unknown" channel to put
+  it in). `BestOfMatchProvider` isolates failures per *source* the same way.
+  Covered by `tests/test_match_provider_base.py` and
+  `tests/test_pipeline_integration.py::test_pipeline_continues_when_one_players_match_fails`.
+- **A total match-lookup failure (every source down, or the sole configured
+  one failing outright) is different and *is* flagged**: every player is
+  reported as `played: false` *with* a `match_error` message attached, so
+  `report.json` can distinguish "we confirmed she didn't play" from "we
+  couldn't check." Covered by
+  `tests/test_pipeline_integration.py::test_pipeline_marks_every_player_with_match_error_on_total_batch_failure`.
 - **Rankings failing is fatal for that run** (there is nothing to report
   without them) - `DataProviderError` propagates out of `DailyPipeline.run()`
   and the CLI logs it clearly and exits non-zero, rather than writing a
@@ -584,19 +694,25 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 110 unit/integration tests cover models, movement math (including the
-"unknown" vs "new" distinction), country/flag resolution, config loading,
-the plugin registry, snapshot persistence, the sample providers, the
-`wta_official` match provider's date-recovery and bye/walkover/doubles
+Over 136 unit/integration tests cover models (including `DailyReport.match_target_date`
+round-tripping), movement math (including the "unknown" vs "new"
+distinction), country/flag resolution, config loading, the plugin registry,
+snapshot persistence, the sample providers, `MatchProvider`'s default
+day-first fallback in isolation (`tests/test_match_provider_base.py`), the
+`wta_official` match provider's date-recovery, day-first tournament scan
+(including the "never falls back to an older match", timezone-normalization,
+and irrelevant-tour-level-skipping behaviors), and bye/walkover/doubles
 filtering logic (mocked HTTP - see
 `tests/test_wta_official_match_provider.py`), the `live_tennis_api` and
 `api_tennis` match providers' name-resolution and event-status filtering
 logic (mocked HTTP - `tests/test_live_tennis_api_match_provider.py`,
 `tests/test_api_tennis_match_provider.py`), the `best_of` composite
-provider's "prefer the more recently confirmed date, isolate per-source
-failures" logic (`tests/test_best_of_match_provider.py`, including a
-regression test for the real stale-namesake-record incident described
-above), the template script generator (including the "mention movement
+provider's source-combination logic for both `get_latest_match` ("prefer the
+more recently confirmed date") and `get_matches_for_date` ("first source to
+confirm a player wins; only raise if every source fails outright")
+(`tests/test_best_of_match_provider.py`, including a regression test for the
+real stale-namesake-record incident described above), the template script
+generator (including the "mention movement
 only when it changed", "never say a baseline run's players are new", "the
 sign-off is always last" and "no verbatim-identical script two days in a
 row" behaviors), graphics rendering, and a full end-to-end pipeline run

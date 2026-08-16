@@ -10,11 +10,12 @@ so the pipeline stays short and easy to read even as more phases are added.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from wta_daily.config import AppConfig
 from wta_daily.exceptions import (
+    DataProviderError,
     GraphicsError,
     PlayerDataError,
     VideoAssemblyError,
@@ -114,17 +115,28 @@ class DailyPipeline:
         else:
             logger.info("Comparing against snapshot from %s.", previous[0].isoformat())
 
-        logger.info("Downloading matches...")
+        match_target_date = report_date - timedelta(days=self._config.match_target_date_offset_days)
+        logger.info("Downloading matches completed on %s...", match_target_date.isoformat())
+        matches_by_player, batch_error = self._safe_get_matches_for_date(rankings, match_target_date)
+        if batch_error:
+            logger.warning(
+                "Could not confirm match data for %s - every player below will show "
+                "played: false with a match_error rather than a guess.",
+                match_target_date.isoformat(),
+            )
+
         players: list[PlayerReport] = []
         errors: list[str] = []
+        if batch_error:
+            errors.append(batch_error)
         for ranking in rankings:
             previous_rank = previous_ranks.get(ranking.player_id)
             movement = compute_movement(
                 ranking.rank, previous_rank, has_previous_snapshot=has_previous_snapshot
             )
-            match, match_error = self._safe_get_latest_match(ranking)
-            if match_error:
-                errors.append(match_error)
+            match = matches_by_player.get(ranking.player_id)
+            if match is None:
+                logger.info("%s did not play on %s.", ranking.name, match_target_date.isoformat())
             players.append(
                 PlayerReport(
                     rank=ranking.rank,
@@ -135,24 +147,39 @@ class DailyPipeline:
                     movement=movement,
                     previous_rank=previous_rank,
                     match=match,
-                    match_error=match_error,
+                    match_error=batch_error,
                 )
             )
 
         self._snapshot_store.save_snapshot(report_date, self._config.tour, rankings)
-        return DailyReport(report_date=report_date, tour=self._config.tour, players=players, errors=errors)
+        return DailyReport(
+            report_date=report_date,
+            tour=self._config.tour,
+            players=players,
+            errors=errors,
+            match_target_date=match_target_date,
+        )
 
-    def _safe_get_latest_match(self, ranking: PlayerRanking) -> tuple[MatchResult | None, str | None]:
-        """Fetch one player's latest match, never letting a failure abort the run."""
+    def _safe_get_matches_for_date(
+        self, rankings: list[PlayerRanking], target_date: date
+    ) -> tuple[dict[str, MatchResult], str | None]:
+        """Batch match lookup for every ranked player, never letting a failure abort the run.
+
+        A failure here means the whole lookup for ``target_date`` could not
+        be confirmed (e.g. a network outage) - every player is reported as
+        ``played: false`` *with* the returned error message attached, which
+        is different from a player who genuinely didn't play (no error).
+        See ``PlayerReport.match_error``.
+        """
 
         try:
-            return self._match_provider.get_latest_match(ranking), None
-        except PlayerDataError as exc:
-            logger.error("Match lookup failed for %s: %s", ranking.name, exc)
-            return None, str(exc)
-        except Exception as exc:  # noqa: BLE001 - isolate every player, no matter the failure
-            logger.exception("Unexpected error fetching match for %s", ranking.name)
-            return None, f"Unexpected error fetching match for {ranking.name}: {exc}"
+            return self._match_provider.get_matches_for_date(rankings, target_date), None
+        except (PlayerDataError, DataProviderError) as exc:
+            logger.error("Match lookup failed for %s: %s", target_date, exc)
+            return {}, str(exc)
+        except Exception as exc:  # noqa: BLE001 - this step must never abort the run
+            logger.exception("Unexpected error fetching matches for %s", target_date)
+            return {}, f"Unexpected error fetching matches for {target_date}: {exc}"
 
     def _render_graphics(self, report: DailyReport, store: DailyOutputStore) -> None:
         try:

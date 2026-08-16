@@ -7,6 +7,7 @@ composition logic in isolation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 
 import pytest
@@ -44,6 +45,37 @@ def _register_fake_source(
             return result
 
     matches_registry.register(name)(_Fake)
+
+
+def _register_fake_batch_source(
+    name: str,
+    *,
+    results: dict[str, MatchResult] | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Registers a fake source whose ``get_matches_for_date`` is controlled
+    directly (rather than relying on the base class's per-player fallback),
+    for tests that exercise ``BestOfMatchProvider.get_matches_for_date``
+    specifically.
+    """
+
+    class _FakeBatch(MatchProvider):
+        def __init__(self, **_ignored: object) -> None:
+            self.calls: list[list[str]] = []
+
+        def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+            raise AssertionError("get_latest_match should not be called by get_matches_for_date tests")
+
+        def get_matches_for_date(
+            self, players: Sequence[PlayerRanking], target_date: date
+        ) -> dict[str, MatchResult]:
+            self.calls.append([p.player_id for p in players])
+            if error is not None:
+                raise error
+            found = results or {}
+            return {p.player_id: found[p.player_id] for p in players if p.player_id in found}
+
+    matches_registry.register(name)(_FakeBatch)
 
 
 def test_prefers_the_source_with_the_more_recent_confirmed_date() -> None:
@@ -131,6 +163,116 @@ def test_requires_at_least_one_source() -> None:
 def test_source_entry_without_provider_key_raises() -> None:
     with pytest.raises(ValueError):
         BestOfMatchProvider(sources=[{"lookback_matches": 10}])
+
+
+# --- get_matches_for_date (day-first) ----------------------------------------------------
+
+PLAYER_2 = PlayerRanking(rank=8, player_id="329668", name="Linda Noskova", country_code="CZE", points=5016)
+
+
+def test_get_matches_for_date_first_source_to_find_a_player_wins() -> None:
+    match = _match("Someone", date(2026, 8, 15))
+    _register_fake_batch_source("batch-first", results={PLAYER.player_id: match})
+    _register_fake_batch_source("batch-second", results={})
+
+    provider = BestOfMatchProvider(sources=[{"provider": "batch-first"}, {"provider": "batch-second"}])
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results[PLAYER.player_id] is match
+
+
+def test_get_matches_for_date_second_source_fills_in_players_first_source_missed() -> None:
+    match1 = _match("Opponent 1", date(2026, 8, 15))
+    match2 = _match("Opponent 2", date(2026, 8, 15))
+    _register_fake_batch_source("batch-partial-1", results={PLAYER.player_id: match1})
+    _register_fake_batch_source("batch-partial-2", results={PLAYER_2.player_id: match2})
+
+    provider = BestOfMatchProvider(
+        sources=[{"provider": "batch-partial-1"}, {"provider": "batch-partial-2"}]
+    )
+    results = provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
+
+    assert results[PLAYER.player_id] is match1
+    assert results[PLAYER_2.player_id] is match2
+
+
+def test_get_matches_for_date_only_queries_remaining_players_on_later_sources() -> None:
+    """Once a player is confirmed, later sources shouldn't be asked about them again."""
+
+    match = _match("Someone", date(2026, 8, 15))
+    _register_fake_batch_source("batch-found-early", results={PLAYER.player_id: match})
+
+    class _TrackedSecond(MatchProvider):
+        def __init__(self, **_ignored: object) -> None:
+            self.calls: list[list[str]] = []
+
+        def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+            raise AssertionError("not used")
+
+        def get_matches_for_date(
+            self, players: Sequence[PlayerRanking], target_date: date
+        ) -> dict[str, MatchResult]:
+            self.calls.append([p.player_id for p in players])
+            return {}
+
+    matches_registry.register("batch-tracked-second")(_TrackedSecond)
+
+    provider = BestOfMatchProvider(
+        sources=[{"provider": "batch-found-early"}, {"provider": "batch-tracked-second"}]
+    )
+    provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
+
+    tracked_second = provider._sources[1]
+    # Only PLAYER_2 remained unresolved after the first source, so that's all
+    # the second source should ever be asked about.
+    assert tracked_second.calls == [[PLAYER_2.player_id]]
+
+
+def test_get_matches_for_date_confirms_played_false_when_a_working_source_says_so() -> None:
+    """A source that completes successfully but simply doesn't list a player
+    is a confident 'she didn't play' - not an error."""
+
+    _register_fake_batch_source("batch-clean-no-match", results={})
+
+    provider = BestOfMatchProvider(sources=[{"provider": "batch-clean-no-match"}])
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results == {}
+
+
+def test_get_matches_for_date_one_source_erroring_does_not_block_another() -> None:
+    match = _match("Someone", date(2026, 8, 15))
+    _register_fake_batch_source("batch-broken", error=RuntimeError("simulated outage"))
+    _register_fake_batch_source("batch-fine", results={PLAYER.player_id: match})
+
+    provider = BestOfMatchProvider(sources=[{"provider": "batch-broken"}, {"provider": "batch-fine"}])
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results[PLAYER.player_id] is match
+
+
+def test_get_matches_for_date_raises_only_when_every_source_fails() -> None:
+    _register_fake_batch_source("batch-broken-1", error=RuntimeError("outage 1"))
+    _register_fake_batch_source("batch-broken-2", error=RuntimeError("outage 2"))
+
+    provider = BestOfMatchProvider(sources=[{"provider": "batch-broken-1"}, {"provider": "batch-broken-2"}])
+
+    with pytest.raises(PlayerDataError):
+        provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+
+def test_get_matches_for_date_defaults_to_the_per_player_fallback_when_a_source_lacks_native_support() -> (
+    None
+):
+    """A source that only implements get_latest_match still participates
+    correctly, via MatchProvider's default fallback."""
+
+    _register_fake_source("legacy-only", result=_match("Someone", date(2026, 8, 15)))
+
+    provider = BestOfMatchProvider(sources=[{"provider": "legacy-only"}])
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results[PLAYER.player_id].opponent == "Someone"
 
 
 def test_defaults_to_wta_official_and_live_tennis_api_when_unconfigured(

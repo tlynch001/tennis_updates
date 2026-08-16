@@ -69,6 +69,26 @@ class WtaOfficialApiClient:
             raise ValueError(f"Unexpected matches response shape from {url}: {type(matches)!r}")
         return matches
 
+    def list_tournaments_page(self, *, page: int, page_size: int = 100) -> dict[str, Any]:
+        """One page of the full tournament catalogue (``{pageInfo, content}``).
+
+        There is no working date/status filter on this endpoint (confirmed
+        by testing - ``year=``/``status=`` query params are silently
+        ignored), so finding "what's happening this week" means paging
+        through this catalogue and filtering client-side by
+        ``startDate``/``endDate``. Entries are in roughly chronological
+        order (it starts at 1960), so the current season's events are near
+        the *end* - see :func:`wta_daily.plugins.matches.wta_official._find_active_tournaments`
+        for how this is used without scanning the whole ~19,000-entry list
+        on every run.
+        """
+
+        url = f"{self._base_url}/tournaments"
+        data = self._http.get_json(url, params={"page": page, "pageSize": page_size})
+        if not isinstance(data, dict) or "content" not in data:
+            raise ValueError(f"Unexpected tournaments response shape from {url}: {type(data)!r}")
+        return data
+
     def get_tournament_matches(
         self, tournament_group_id: int | str, year: int | str, *, page_size: int = 500
     ) -> list[dict[str, Any]]:

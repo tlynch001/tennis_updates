@@ -26,6 +26,8 @@ per the project's "never tightly couple the pipeline to a data source" rule.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 from wta_daily.config import NetworkConfig
@@ -92,3 +94,45 @@ class BestOfMatchProvider(MatchProvider):
         if dated:
             return max(dated, key=lambda c: c.match_date)  # type: ignore[return-value, arg-type]
         return candidates[0]
+
+    def get_matches_for_date(
+        self, players: Sequence[PlayerRanking], target_date: date
+    ) -> dict[str, MatchResult]:
+        """Ask every source in turn; a player found by any one of them is
+        confidently reported as having played (sources agree on real-world
+        facts, so the first hit is as good as any). A player still
+        unresolved after a source that itself completed without error is
+        confidently reported as ``played: false`` by that source - only if
+        *every* source fails outright do we raise, rather than guess.
+        """
+
+        remaining: dict[str, PlayerRanking] = {p.player_id: p for p in players}
+        results: dict[str, MatchResult] = {}
+        any_source_succeeded = False
+        failures: list[str] = []
+
+        for source in self._sources:
+            if not remaining:
+                break
+            source_name = getattr(source, "name", type(source).__name__)
+            try:
+                source_results = source.get_matches_for_date(list(remaining.values()), target_date)
+            except Exception as exc:  # noqa: BLE001 - one source's failure must not block others
+                logger.info(
+                    "Match source %s failed while checking %s: %s", source_name, target_date, exc
+                )
+                failures.append(f"{source_name}: {exc}")
+                continue
+
+            any_source_succeeded = True
+            for player_id, match in source_results.items():
+                if player_id in remaining:
+                    results[player_id] = match
+                    del remaining[player_id]
+
+        if remaining and not any_source_succeeded:
+            raise PlayerDataError(
+                f"All match sources failed while checking {target_date} for "
+                f"{len(remaining)} player(s): " + "; ".join(failures)
+            )
+        return results

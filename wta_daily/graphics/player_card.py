@@ -138,7 +138,11 @@ def _render(
         fill=panel,
     )
 
-    section_label = "MOST RECENT MATCH"
+    # "Yesterday" matches the default match_target_date_offset_days=1; if
+    # that's reconfigured, the label would need to become more generic, but
+    # this keeps the common case reading naturally without threading the
+    # exact target date through the GraphicsRenderer interface for a label.
+    section_label = "YESTERDAY'S MATCH"
     draw.text(
         (margin * 1.6, panel_top + height * 0.04),
         section_label,
@@ -177,7 +181,7 @@ def _render(
             anchor="la",
         )
     else:
-        message = "No completed match to report today."
+        message = "Did not play yesterday."
         if player.match_error:
             message = "Match data unavailable today."
         draw.text(

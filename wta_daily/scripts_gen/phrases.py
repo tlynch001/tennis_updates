@@ -92,9 +92,10 @@ MATCH_LOSS: list[str] = [
 ]
 
 NO_MATCH: list[str] = [
-    "hasn't completed a match since our last update",
-    "is yet to take the court since we last checked in",
-    "has no new result to report today",
+    "did not play yesterday",
+    "was off yesterday, with no completed match to report",
+    "has no result from yesterday's play to bring you",
+    "did not take the court yesterday",
 ]
 
 POINTS_GAP_TEMPLATES: list[str] = [

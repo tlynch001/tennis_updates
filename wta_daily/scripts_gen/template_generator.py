@@ -116,7 +116,7 @@ class TemplateScriptGenerator(ScriptGenerator):
             sentence = f"{player.name} {movement_clause}"
 
         if player.match_error:
-            sentence += f", though her latest result couldn't be confirmed today ({player.match_error})."
+            sentence += ", though yesterday's results couldn't be confirmed for the tour today."
         elif player.match is None:
             sentence += f", and {cyclers['no_match'].next()}."
         else:
