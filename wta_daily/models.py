@@ -233,6 +233,109 @@ class PlayerReport:
 
 
 @dataclass
+class FeaturedPlayerReport:
+    """A recurring, editorially-flavored spotlight on one specific player,
+    tracked independently of (and never mixed into) the official Top N list
+    - see :class:`~wta_daily.config.FeaturedPlayerConfig`.
+
+    Every fact here (``rank``, ``points``, ``movement``, ``match``) is
+    retrieved through exactly the same provider architecture as the Top N;
+    only the *narration* built from this model is allowed to editorialize
+    (see :mod:`wta_daily.scripts_gen.featured_player_phrases`). A fact that
+    could not be determined this run is ``None`` rather than guessed -
+    ``rank_error``/``match_error`` explain why when that happens, without
+    treating it as a fatal error for the rest of the pipeline.
+    """
+
+    name: str
+    player_id: str
+    tagline: str
+    country_code: str = ""
+    rank: int | None = None
+    points: int | None = None
+    movement: Movement | None = None
+    previous_rank: int | None = None
+    match: MatchResult | None = None
+    match_error: str | None = None
+    rank_error: str | None = None
+
+    @property
+    def played(self) -> bool | None:
+        """``None`` when we don't even know her rank this run (nothing to
+        report at all), as opposed to ``False`` for a confirmed non-match."""
+
+        if self.rank is None:
+            return None
+        return self.match is not None
+
+    @property
+    def won(self) -> bool | None:
+        return self.match.won if self.match else None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "name": self.name,
+            "player_id": self.player_id,
+            "tagline": self.tagline,
+            "country_code": self.country_code,
+            "rank": self.rank,
+            "points": self.points,
+            "movement": self.movement.value if self.movement is not None else None,
+            "previous_rank": self.previous_rank,
+            "played": self.played,
+            "won": self.won,
+        }
+        if self.match is not None:
+            data["opponent"] = self.match.opponent
+            data["score"] = self.match.score
+            data["tournament"] = self.match.tournament
+            data["round"] = self.match.round
+            data["match_date"] = self.match.match_date.isoformat() if self.match.match_date else None
+            data["surface"] = self.match.surface
+        else:
+            data["opponent"] = None
+            data["score"] = None
+            data["tournament"] = None
+            data["round"] = None
+            data["match_date"] = None
+            data["surface"] = None
+        if self.match_error:
+            data["match_error"] = self.match_error
+        if self.rank_error:
+            data["rank_error"] = self.rank_error
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FeaturedPlayerReport:
+        match = None
+        if data.get("tournament") and data.get("opponent"):
+            raw_match_date = data.get("match_date")
+            match = MatchResult(
+                opponent=data["opponent"],
+                tournament=data["tournament"],
+                round=data.get("round", ""),
+                score=data.get("score", ""),
+                won=bool(data.get("won")),
+                match_date=date.fromisoformat(raw_match_date) if raw_match_date else None,
+                surface=data.get("surface"),
+            )
+        movement_raw = data.get("movement")
+        return cls(
+            name=str(data["name"]),
+            player_id=str(data["player_id"]),
+            tagline=str(data.get("tagline", "")),
+            country_code=str(data.get("country_code", "")),
+            rank=data.get("rank"),
+            points=data.get("points"),
+            movement=Movement(movement_raw) if movement_raw else None,
+            previous_rank=data.get("previous_rank"),
+            match=match,
+            match_error=data.get("match_error"),
+            rank_error=data.get("rank_error"),
+        )
+
+
+@dataclass
 class DailyReport:
     """The complete, self-contained result of one day's pipeline run.
 
@@ -250,6 +353,12 @@ class DailyReport:
     players: list[PlayerReport] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     match_target_date: date | None = None
+    #: The recurring featured-player spotlight (see
+    #: :class:`~wta_daily.config.FeaturedPlayerConfig`), kept in its own
+    #: field rather than injected into `players` - she is only "official
+    #: Top N" when her real rank actually qualifies. `None` whenever the
+    #: feature is disabled.
+    featured_player: FeaturedPlayerReport | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -259,16 +368,21 @@ class DailyReport:
                 self.match_target_date.isoformat() if self.match_target_date else None
             ),
             "players": [p.to_dict() for p in self.players],
+            "featured_player": self.featured_player.to_dict() if self.featured_player else None,
             "errors": self.errors,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DailyReport:
         raw_target_date = data.get("match_target_date")
+        raw_featured_player = data.get("featured_player")
         return cls(
             report_date=date.fromisoformat(data["date"]),
             tour=data.get("tour", "wta"),
             players=[PlayerReport.from_dict(p) for p in data.get("players", [])],
             errors=list(data.get("errors", [])),
             match_target_date=date.fromisoformat(raw_target_date) if raw_target_date else None,
+            featured_player=(
+                FeaturedPlayerReport.from_dict(raw_featured_player) if raw_featured_player else None
+            ),
         )

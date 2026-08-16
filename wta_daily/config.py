@@ -204,6 +204,47 @@ class GitConfig:
 
 
 @dataclass
+class FeaturedPlayerConfig:
+    """A recurring, editorially-flavored spotlight on one specific player,
+    layered on top of - never mixed into - the official Top N report.
+
+    Disabled by default. Every *fact* reported for this player (rank,
+    points, movement, match) comes from exactly the same
+    :class:`~wta_daily.plugins.base.RankingsProvider` /
+    :class:`~wta_daily.plugins.base.MatchProvider` architecture used for the
+    Top N - this config block only names *which* player and *which*
+    narration personality (``tagline``) to use; it never bypasses or
+    duplicates the data layer. See
+    :mod:`wta_daily.scripts_gen.featured_player_phrases` for the currently
+    shipped ``"america_favorite"`` personality (tuned for Emma Navarro, but
+    not Emma-specific by name - a future featured player could reuse it, or
+    a different ``tagline`` could select a different phrase module).
+    """
+
+    enabled: bool = False
+    player_id: str = ""
+    name: str = ""
+    tagline: str = "america_favorite"
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> FeaturedPlayerConfig:
+        data = data or {}
+        defaults = cls()
+        config = cls(
+            enabled=bool(data.get("enabled", defaults.enabled)),
+            player_id=str(data.get("player_id", defaults.player_id)),
+            name=str(data.get("name", defaults.name)),
+            tagline=str(data.get("tagline", defaults.tagline)),
+        )
+        if config.enabled and not (config.player_id and config.name):
+            raise ConfigurationError(
+                "featured_player.enabled is true but 'player_id' and/or 'name' is not set - "
+                "both are required so the pipeline knows exactly who to look up."
+            )
+        return config
+
+
+@dataclass
 class ScriptConfig:
     generator: str = "template"
     target_minutes_low: float = 5.0
@@ -259,6 +300,7 @@ class AppConfig:
     match_provider: ProviderConfig = field(
         default_factory=lambda: ProviderConfig(name="wta_official")
     )
+    featured_player: FeaturedPlayerConfig = field(default_factory=FeaturedPlayerConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     script: ScriptConfig = field(default_factory=ScriptConfig)
     graphics: GraphicsConfig = field(default_factory=GraphicsConfig)
@@ -286,6 +328,7 @@ class AppConfig:
             match_provider=ProviderConfig.from_mapping(
                 data.get("match_provider"), default_name="wta_official"
             ),
+            featured_player=FeaturedPlayerConfig.from_mapping(data.get("featured_player")),
             network=NetworkConfig.from_mapping(data.get("network")),
             script=ScriptConfig.from_mapping(data.get("script")),
             graphics=GraphicsConfig.from_mapping(data.get("graphics")),
