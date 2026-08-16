@@ -12,7 +12,7 @@ from datetime import date
 
 import pytest
 
-from wta_daily.exceptions import PlayerDataError
+from wta_daily.exceptions import ConfigurationError, PlayerDataError
 from wta_daily.models import MatchResult, PlayerRanking
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.matches.best_of import BestOfMatchProvider
@@ -163,6 +163,41 @@ def test_requires_at_least_one_source() -> None:
 def test_source_entry_without_provider_key_raises() -> None:
     with pytest.raises(ValueError):
         BestOfMatchProvider(sources=[{"lookback_matches": 10}])
+
+
+class _UnconfigurableSource(MatchProvider):
+    """Fails to even construct - simulates a paid source with no API key set."""
+
+    def __init__(self, **_ignored: object) -> None:
+        raise ConfigurationError("simulated missing API key")
+
+    def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+        raise AssertionError("never constructed, so never called")
+
+
+def test_a_source_that_fails_to_construct_is_skipped_not_fatal() -> None:
+    """Regression test: one misconfigured source (e.g. a paid provider with
+    no API key set yet) must not prevent the whole pipeline from running
+    when another configured source is perfectly usable."""
+
+    matches_registry.register("unconfigurable-for-tests")(_UnconfigurableSource)
+    _register_fake_source("fake-usable", result=_match("Someone", date(2026, 8, 15)))
+
+    provider = BestOfMatchProvider(
+        sources=[{"provider": "unconfigurable-for-tests"}, {"provider": "fake-usable"}]
+    )
+
+    assert len(provider._sources) == 1
+    result = provider.get_latest_match(PLAYER)
+    assert result is not None
+    assert result.opponent == "Someone"
+
+
+def test_raises_configuration_error_when_every_source_fails_to_construct() -> None:
+    matches_registry.register("unconfigurable-for-tests-2")(_UnconfigurableSource)
+
+    with pytest.raises(ConfigurationError):
+        BestOfMatchProvider(sources=[{"provider": "unconfigurable-for-tests-2"}])
 
 
 # --- get_matches_for_date (day-first) ----------------------------------------------------

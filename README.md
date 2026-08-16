@@ -282,7 +282,16 @@ player"* (day-first):
    removing a player from consideration as soon as any source confirms a
    match for them, and only raises if **every** source fails outright -
    a player confidently absent from a source that itself completed without
-   error is reported as `played: false`, not as an error.
+   error is reported as `played: false`, not as an error. This same
+   per-source isolation now also covers **construction**, not just lookups:
+   if a configured source can't even be built (e.g. a paid source's API key
+   hasn't been set yet), that source is skipped with a logged warning
+   instead of crashing the whole run, as long as at least one other
+   configured source is usable - `ConfigurationError` is raised only if
+   every configured source fails to construct. This is what lets the
+   default config ship with both `wta_official` and `live_tennis_api`
+   listed, even though only the free one is guaranteed to work out of the
+   box.
 5. `report.json` gained a top-level `match_target_date` field (the actual
    UTC date being asked about - `report_date` minus
    `match_target_date_offset_days`, default 1 = yesterday) so every
@@ -694,7 +703,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 136 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 138 unit/integration tests cover models (including `DailyReport.match_target_date`
 round-tripping), movement math (including the "unknown" vs "new"
 distinction), country/flag resolution, config loading, the plugin registry,
 snapshot persistence, the sample providers, `MatchProvider`'s default

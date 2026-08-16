@@ -17,6 +17,13 @@ date. A result with an unconfirmed (``None``) date is only used if nothing
 better is available, since a dated result is strictly more informative for
 comparison purposes.
 
+Isolation starts even before any lookup happens: if a configured source
+can't be *constructed* at all (e.g. a paid source's API key hasn't been set
+yet), that source is skipped with a logged warning rather than crashing the
+whole pipeline - as long as at least one other configured source is usable.
+Only if every source fails to construct does this raise, since at that
+point there is genuinely nothing left to try.
+
 This composes existing plugins purely through the registry - it does not
 know or care what ``wta_official``/``live_tennis_api`` do internally, so
 adding a third source later (or removing one) is a one-line config change,
@@ -31,7 +38,7 @@ from datetime import date
 from typing import Any
 
 from wta_daily.config import NetworkConfig
-from wta_daily.exceptions import PlayerDataError
+from wta_daily.exceptions import ConfigurationError, PlayerDataError
 from wta_daily.models import MatchResult, PlayerRanking
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.registry import matches_registry
@@ -61,12 +68,33 @@ class BestOfMatchProvider(MatchProvider):
             raise ValueError("BestOfMatchProvider requires at least one entry in 'sources'.")
 
         self._sources: list[MatchProvider] = []
+        construction_failures: list[str] = []
         for source_config in source_configs:
             source_config = dict(source_config)
             name = source_config.pop("provider", None)
             if not name:
                 raise ValueError(f"Each best_of source needs a 'provider' name: {source_config!r}")
-            self._sources.append(matches_registry.create(name, network=network, **source_config))
+            # A source that can't even be *constructed* (e.g. a missing API
+            # key for a paid provider) must not take the whole job down with
+            # it if another configured source is perfectly usable - this is
+            # the same "isolate failures per source" principle as the
+            # runtime methods below, just applied one step earlier. Only if
+            # every source fails to construct do we escalate (see below).
+            try:
+                self._sources.append(matches_registry.create(name, network=network, **source_config))
+            except Exception as exc:  # noqa: BLE001 - never let one bad source block the others
+                logger.warning(
+                    "best_of source %r could not be set up and will be skipped for this run: %s",
+                    name,
+                    exc,
+                )
+                construction_failures.append(f"{name}: {exc}")
+
+        if not self._sources:
+            raise ConfigurationError(
+                "None of the configured best_of match sources could be set up: "
+                + "; ".join(construction_failures)
+            )
 
     def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
         candidates: list[MatchResult] = []
