@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from wta_daily.config import ScriptConfig
-from wta_daily.models import DailyReport, MatchResult, Movement, PlayerReport
+from wta_daily.models import DailyReport, FeaturedPlayerReport, MatchResult, Movement, PlayerReport
 from wta_daily.scripts_gen import phrases
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
 
@@ -158,3 +158,62 @@ def test_unknown_movement_still_mentions_current_rank() -> None:
 
     for player in report.players:
         assert player.name in script
+
+
+def test_no_featured_player_produces_no_extra_content() -> None:
+    """The default (feature disabled/unset) must behave exactly as before
+    this feature existed - no featured-player wording anywhere."""
+
+    report = _sample_report([Movement.SAME, Movement.UP])
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "Emma Navarro" not in script
+    assert "America's favorite" not in script
+
+
+def test_featured_player_segment_appears_after_top_n_and_before_sign_off() -> None:
+    report = _sample_report([Movement.SAME, Movement.UP])
+    report.featured_player = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        rank=28,
+        points=1669,
+        movement=Movement.SAME,
+        previous_rank=28,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "Emma Navarro" in script
+    paragraphs = [p for p in script.split("\n\n") if p.strip()]
+    emma_index = next(i for i, p in enumerate(paragraphs) if "Emma Navarro" in p)
+    closer_index = len(paragraphs) - 1
+
+    # The featured segment is its own paragraph, strictly after every Top N
+    # player paragraph and strictly before the final sign-off.
+    assert emma_index > 0
+    assert emma_index < closer_index
+    for player in report.players:
+        player_paragraph_index = next(i for i, p in enumerate(paragraphs) if player.name in p)
+        assert player_paragraph_index < emma_index
+
+    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    assert paragraphs[closer_index] in possible_closers
+
+
+def test_featured_player_with_unavailable_rank_produces_no_segment() -> None:
+    """If her rank couldn't be determined this run, the script must not
+    mention her at all rather than saying something with no real numbers."""
+
+    report = _sample_report([Movement.SAME])
+    report.featured_player = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        rank_error="network timeout",
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "Emma Navarro" not in script

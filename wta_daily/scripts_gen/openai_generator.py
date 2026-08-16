@@ -44,7 +44,23 @@ _SYSTEM_PROMPT = (
     "End the script with a single, clear sign-off line "
     "(e.g. thanking viewers and mentioning you'll be back tomorrow) - that sign-off must "
     "be the very last line of the script, with no further commentary, statistics, or "
-    "caveats added after it."
+    "caveats added after it. "
+    "If a 'Featured player' section is given below, add one short (1-3 sentence) segment "
+    "about that player AFTER all the Top N coverage and AFTER any length-related notes, but "
+    "BEFORE the final sign-off line. This segment is the one place a light, affectionate, "
+    "tongue-in-cheek editorial voice is allowed - the running joke is that this player is "
+    "unofficially 'America's favorite' regardless of her real ranking, and if she's outside "
+    "the Top N, that the Top N return is inevitable (vary the wording; do not repeat the same "
+    "sentence structure across consecutive days). Never make a mathematically specific claim "
+    "like 'just two wins away'. If her rank has her already inside the Top N, retire the "
+    "'trying to break in' framing and instead celebrate that she's arrived; if she's reached "
+    "world No. 1, drop the official-vs-unofficial-ranking bit entirely and just recognize the "
+    "real result. Only occasionally (not every script) use a '#1 in our hearts' style joke "
+    "contrasting her official rank with an imaginary one - and never once she's genuinely "
+    "world No. 1. Every fact you state about this player (rank, movement, match result) must "
+    "come only from the 'Featured player' data given below - if her rank is not given, omit "
+    "the segment entirely rather than guessing; if her match result is not given, do not "
+    "mention a match at all for her."
 )
 
 
@@ -80,6 +96,32 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             f"previous rank: {player.previous_rank}): {player.name}, {player.points} points. "
             f"Latest match: {match_desc}."
         )
+
+    featured = report.featured_player
+    if featured is not None:
+        lines.extend(["", "Featured player (see system prompt for how to use this):"])
+        if featured.rank is None:
+            lines.append(
+                f"- {featured.name}: current rank unavailable this run "
+                f"({featured.rank_error or 'no reason given'}) - omit the segment entirely."
+            )
+        else:
+            match_desc = "no completed match to report"
+            if featured.match is not None:
+                outcome = "won" if featured.match.won else "lost"
+                match_desc = (
+                    f"{outcome} vs {featured.match.opponent} {featured.match.score} "
+                    f"({featured.match.round}, {featured.match.tournament})"
+                )
+            elif featured.match_error:
+                match_desc = f"match data unavailable ({featured.match_error})"
+            lines.append(
+                f"- {featured.name}: rank {featured.rank} (movement: "
+                f"{featured.movement.value if featured.movement else 'unknown'}, previous rank: "
+                f"{featured.previous_rank}), in Top {len(report.players)}: "
+                f"{featured.rank <= len(report.players)}. Latest match: {match_desc}."
+            )
+
     return "\n".join(lines)
 
 
