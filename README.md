@@ -26,6 +26,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 ## Table of contents
 
 - [Data source research & recommendation](#data-source-research--recommendation)
+- [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -326,6 +327,126 @@ before taking the calendar date, and "yesterday" is defined project-wide as
 **UTC calendar yesterday relative to when the job runs** - deterministic
 and reproducible regardless of which tournament's timezone a match was
 actually played in.
+
+## Understanding & optimizing API usage
+
+An August 2026 audit (prompted by wanting to add featured-player lookups
+without multiplying request volume) walked every external HTTP call one
+normal daily run makes, end to end, and applied the safe optimizations that
+came out of it - summarized here.
+
+### What a normal run actually calls (verified live, `wta_official` alone)
+
+```
+1x  GET /tennis/players/ranked                       ("WTA rankings")
+1x  GET /tennis/tournaments?page=0                   ("WTA tournament discovery" - learns total entry count)
+25x GET /tennis/tournaments?page=N                    ("WTA tournament discovery" - scans the last ~2,500-entry window for active tournaments; see catalogue_scan_pages)
+1x  GET /tennis/tournaments/{groupId}/{year}/matches  ("WTA match results" - one call per *active* tournament this week, not per player)
+------------------------------------------------------------------------
+28 total (verified live, August 2026, real Top 10, one active tournament that week)
+```
+
+**Rankings: already minimal, now reusable.** `get_top_n(n)` has always been
+exactly one HTTP call (`page_size=n`) regardless of `n` - fetching a Top 25
+pool instead of a Top 10 one does not add a request, it just asks the same
+single call for a few more rows. The pipeline now does exactly that
+(`rankings_pool_size` in config, default 25): it fetches the pool once,
+slices the first `top_n` for the actual report, and keeps the rest on
+`DailyPipeline.last_rankings_pool` and in the `players.json` metadata cache
+for a future featured-player lookup to reuse - so that feature, whenever
+it's built, should never need a dedicated rankings request of its own.
+Movement-comparison history (`rankings-history.json`) deliberately stays
+scoped to exactly `top_n`, never the wider pool - see
+`RankingsSnapshotStore.save_snapshot`'s docstring for why widening it would
+silently break what "NEW" means.
+
+**Match data: already batched correctly, one avoidable duplicate removed.**
+`WtaOfficialMatchProvider.get_matches_for_date` was already built around the
+preferred "fetch once, normalize, match locally against every tracked
+player" shape, not "one API call per player" - `_get_tournament_matches`
+has always cached each tournament's match list per run, so N players
+sharing one active tournament costs exactly one HTTP call, not N. The one
+real duplication risk (page 0 fetched once for the total entry count, and
+then again if it also happened to fall inside the scan window) is now
+prevented unconditionally: `WtaOfficialApiClient.list_tournaments_page`
+caches every page it fetches per `(page, page_size)` for the lifetime of one
+run, so asking for the same page twice - by this code path or any future
+one - never issues a second real request. The `catalogue_scan_pages` scan
+itself (~25 pages) is **not** reduced, since there's no safe way to know in
+advance how far back the current season's entries start in that endpoint's
+roughly-chronological catalogue, and guessing wrong would silently miss an
+active tournament - exactly the kind of "faster but less reliable" tradeoff
+this audit was told not to make. It's fully configurable
+(`match_provider.sources[].catalogue_scan_pages`) for anyone who wants to
+tune it against their own observed data using the instrumentation below.
+
+**Fallback providers: this is where the real waste was.** Before this
+audit, `BestOfMatchProvider.get_matches_for_date` treated "this source
+didn't return a match for player X" as "still need to ask the next source
+about her" - which meant that on a normal day, when the large majority of
+the Top 10 simply didn't play, *every one of them* triggered a fallback
+query to `live_tennis_api` (and any other configured paid source), every
+single day, purely because "no match" looked identical to "couldn't check."
+Fixed by introducing `MatchLookupResult` (`wta_daily/models.py`): a source
+now reports `unresolved_player_ids` distinctly from a confirmed absence, so
+`BestOfMatchProvider` only carries a player forward to the next source when
+her status is genuinely still in doubt (a fetch failure), never merely
+because she didn't play. Verified live: with `LIVETENNISAPI_KEY` set to a
+placeholder (so the source constructs successfully and *could* be called),
+`wta_official` alone confidently accounted for the entire Top 10 on a
+representative day, and `LiveTennisAPI` recorded **zero** requests for that
+run - the paid source is only ever actually queried when `wta_official`
+itself couldn't determine a specific player's status (see
+`tests/test_best_of_match_provider.py`'s
+`test_get_matches_for_date_does_not_call_a_later_source_for_a_confirmed_negative`
+and `..._only_queries_genuinely_unresolved_players_on_later_sources`). This
+is a strict improvement in both directions at once: fewer (often paid, rate
+limited) requests on a normal day, *and* better accuracy than before on the
+one day it matters, because a source whose fetch genuinely failed for one
+player is now escalated correctly instead of that player being silently
+absorbed into "no match" the same as everyone who simply didn't play.
+
+### Understanding API usage in your own runs
+
+Every outbound request to `api.wtatennis.com`, `livetennisapi.com`, and
+`api-tennis.com` is tallied per run (never per URL/params/headers, so this
+can't leak a key) and logged as a summary right before "Finished
+successfully":
+
+```
+External API requests:
+  WTA match results: 1
+  WTA rankings: 1
+  WTA tournament discovery: 26
+  Total: 28
+```
+
+A category that was never called (e.g. a disabled or successfully-avoided
+fallback source) is simply omitted rather than shown as zero, so this
+summary always reflects exactly what happened. Run with `--verbose` to also
+see each individual request logged as it happens
+(`wta_daily.api_usage: External API request recorded: ...`), in order - see
+`wta_daily/api_usage.py`.
+
+### What was deliberately left alone
+
+- **`catalogue_scan_pages` (~25 pages) is not reduced** - see above; this is
+  the single largest remaining cost (26 of 28 requests in the measurement
+  above) and a legitimate target for a *future*, carefully-verified
+  optimization (e.g. persisting a "last known good starting page" hint
+  across runs), but doing that safely needs its own dedicated
+  live-verification pass, not a guess bundled into this audit.
+- **No cross-run cache for rankings or match results** - both are
+  inherently time-sensitive; caching them across days would risk exactly
+  the staleness this project was built to fix. Only genuinely stable data
+  (player name/country - `players.json`) is cached long-term.
+- **No persistent player-id cache for the paid sources** (`live_tennis_api`
+  resolves a name to its own numeric id via a search call, `api_tennis` via
+  one cached-per-run standings call) - left as a per-run cache only,
+  since after the fallback fix above these sources are called rarely enough
+  that persisting their id mappings across days is unlikely to be worth the
+  added complexity. Revisit if instrumentation on a real deployment shows
+  otherwise.
 
 ## Player imagery: legal approach
 
@@ -703,31 +824,38 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 138 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 160 unit/integration tests cover models (including `DailyReport.match_target_date`
+and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction)
 round-tripping), movement math (including the "unknown" vs "new"
 distinction), country/flag resolution, config loading, the plugin registry,
-snapshot persistence, the sample providers, `MatchProvider`'s default
+snapshot persistence (including the wider-pool-metadata-without-affecting-
+movement-history behavior), the sample providers, `MatchProvider`'s default
 day-first fallback in isolation (`tests/test_match_provider_base.py`), the
 `wta_official` match provider's date-recovery, day-first tournament scan
 (including the "never falls back to an older match", timezone-normalization,
-and irrelevant-tour-level-skipping behaviors), and bye/walkover/doubles
-filtering logic (mocked HTTP - see
-`tests/test_wta_official_match_provider.py`), the `live_tennis_api` and
-`api_tennis` match providers' name-resolution and event-status filtering
-logic (mocked HTTP - `tests/test_live_tennis_api_match_provider.py`,
+irrelevant-tour-level-skipping, and unresolved-vs-confirmed-negative
+behaviors), and bye/walkover/doubles filtering logic (mocked HTTP - see
+`tests/test_wta_official_match_provider.py`), the tournament-catalogue page
+cache and per-endpoint `api_usage` instrumentation
+(`tests/test_wta_api_client.py`), the `api_usage` request counter itself
+(`tests/test_api_usage.py`), the `live_tennis_api` and `api_tennis` match
+providers' name-resolution and event-status filtering logic (mocked HTTP -
+`tests/test_live_tennis_api_match_provider.py`,
 `tests/test_api_tennis_match_provider.py`), the `best_of` composite
 provider's source-combination logic for both `get_latest_match` ("prefer the
-more recently confirmed date") and `get_matches_for_date` ("first source to
-confirm a player wins; only raise if every source fails outright")
+more recently confirmed date") and `get_matches_for_date` ("only call a
+later source for a player still genuinely unresolved, never one already
+confirmed absent by an earlier source")
 (`tests/test_best_of_match_provider.py`, including a regression test for the
 real stale-namesake-record incident described above), the template script
 generator (including the "mention movement
 only when it changed", "never say a baseline run's players are new", "the
 sign-off is always last" and "no verbatim-identical script two days in a
 row" behaviors), graphics rendering, and a full end-to-end pipeline run
-(including the per-player-failure-isolation scenario) - all using the
-offline `sample` providers or mocked HTTP responses, so `pytest` never
-makes a real network call.
+(including the per-player-failure-isolation scenario and the "rankings
+fetched exactly once per run, wider pool exposed for reuse" behavior) - all
+using the offline `sample` providers or mocked HTTP responses, so `pytest`
+never makes a real network call.
 
 ```bash
 pytest              # unit + integration tests

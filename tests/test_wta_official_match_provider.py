@@ -414,14 +414,16 @@ def test_get_matches_for_date_finds_a_finished_match_on_the_target_date(
         },
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert "P1" in results
-    match = results["P1"]
+    assert "P1" in result.matches
+    match = result.matches["P1"]
     assert match.opponent == "Opponent Name"
     assert match.tournament == "Cincinnati"
     assert match.match_date == date(2026, 8, 15)
     assert match.won is False  # Winner="3" means the B slot (opponent) won
+    # No tournament fetch failed, so absence would be a confident negative.
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_get_matches_for_date_reports_no_match_for_a_day_nobody_played(
@@ -435,9 +437,11 @@ def test_get_matches_for_date_reports_no_match_for_a_day_nobody_played(
 
     # The fixture is dated 2026-08-15; asking about a different day must not
     # return it - and must not fall back to it either.
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 14))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 14))
 
-    assert results == {}
+    assert result.matches == {}
+    # Confirmed negative, since every active tournament was read successfully.
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_get_matches_for_date_never_falls_back_to_an_older_match(
@@ -454,9 +458,9 @@ def test_get_matches_for_date_never_falls_back_to_an_older_match(
         fixtures_by_tournament={(1017, 2026): [older_fixture]},
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert "P1" not in results
+    assert "P1" not in result.matches
 
 
 def test_get_matches_for_date_ignores_doubles_and_unfinished_fixtures(
@@ -470,9 +474,9 @@ def test_get_matches_for_date_ignores_doubles_and_unfinished_fixtures(
         fixtures_by_tournament={(1017, 2026): [doubles, unfinished]},
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
 
 
 def test_get_matches_for_date_uses_fallback_round_label(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -487,9 +491,9 @@ def test_get_matches_for_date_uses_fallback_round_label(monkeypatch: pytest.Monk
         },
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results["P1"].round == "Main Draw Round 2"
+    assert result.matches["P1"].round == "Main Draw Round 2"
 
 
 def test_get_matches_for_date_normalizes_local_offset_timestamps_to_utc(
@@ -507,10 +511,10 @@ def test_get_matches_for_date_normalizes_local_offset_timestamps_to_utc(
         fixtures_by_tournament={(1017, 2026): [fixture]},
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 16))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 16))
 
-    assert "P1" in results
-    assert results["P1"].match_date == date(2026, 8, 16)
+    assert "P1" in result.matches
+    assert result.matches["P1"].match_date == date(2026, 8, 16)
 
 
 def test_get_matches_for_date_skips_irrelevant_tour_levels(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -530,9 +534,9 @@ def test_get_matches_for_date_skips_irrelevant_tour_levels(monkeypatch: pytest.M
 
     monkeypatch.setattr(provider._client, "get_tournament_matches", _tracking_get_tournament_matches)
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
     assert fetch_calls == []
 
 
@@ -564,9 +568,54 @@ def test_get_matches_for_date_one_tournament_failing_does_not_block_others(
 
     monkeypatch.setattr(provider._client, "get_tournament_matches", _get_tournament_matches)
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert "P1" in results  # found via the working tournament despite the broken one
+    assert "P1" in result.matches  # found via the working tournament despite the broken one
+    # P1 was actually found, so she isn't ambiguous even though a
+    # (different) tournament failed to fetch.
+    assert result.unresolved_player_ids == frozenset()
+
+
+def test_get_matches_for_date_marks_players_unresolved_when_a_tournament_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player who isn't found anywhere, while some active tournament's
+    match list genuinely couldn't be read, must be reported as unresolved -
+    not a confident 'played: false' - since her match might be exactly the
+    one hidden inside the tournament that failed to fetch. This is what lets
+    a composite provider (best_of) correctly still try another source for
+    her, while not bothering to re-check every other, genuinely-resolved
+    player."""
+
+    provider = WtaOfficialMatchProvider()
+    other_player = PlayerRanking(
+        rank=2, player_id="P9", name="Someone Else", country_code="FRA", points=1000
+    )
+    monkeypatch.setattr(
+        provider._client,
+        "list_tournaments_page",
+        lambda page, page_size=100: (
+            _catalogue_page(
+                page=page,
+                total_entries=1,
+                entries=[_tournament_catalogue_entry(group_id=1, name="BROKEN")],
+            )
+            if page == 0
+            else _catalogue_page(page=page, entries=[])
+        ),
+    )
+    monkeypatch.setattr(
+        provider._client,
+        "get_tournament_matches",
+        lambda group_id, year, page_size=500: (_ for _ in ()).throw(
+            RuntimeError("simulated outage")
+        ),
+    )
+
+    result = provider.get_matches_for_date([PLAYER, other_player], date(2026, 8, 15))
+
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset({"P1", "P9"})
 
 
 def test_get_matches_for_date_raises_when_catalogue_scan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -597,8 +646,8 @@ def test_get_matches_for_date_finds_second_player_slot(monkeypatch: pytest.Monke
         },
     )
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert "P1" in results
-    assert results["P1"].won is True
-    assert results["P1"].opponent == "Test Player"  # slot A's name, per the fixture helper's defaults
+    assert "P1" in result.matches
+    assert result.matches["P1"].won is True
+    assert result.matches["P1"].opponent == "Test Player"  # slot A's name, per the fixture helper's defaults

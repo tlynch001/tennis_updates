@@ -129,6 +129,30 @@ class MatchResult:
         )
 
 
+@dataclass(frozen=True)
+class MatchLookupResult:
+    """Outcome of a day-first batch match lookup (:meth:`MatchProvider.get_matches_for_date`)
+    for a set of players.
+
+    ``matches`` holds confirmed results, keyed by ``player_id``, for players
+    who completed a singles match on the requested date.
+
+    ``unresolved_player_ids`` holds the ``player_id``\\ s this source could
+    not determine one way or the other for that date (e.g. a data-fetch
+    failure for the specific tournament that would have contained their
+    result) - **distinct** from a player_id simply absent from ``matches``,
+    which means this source *did* check and positively confirmed that player
+    did not play. This distinction is what lets a composite provider (see
+    :class:`~wta_daily.plugins.matches.best_of.BestOfMatchProvider`) stop
+    asking further sources about a player once her status is genuinely
+    confirmed, instead of re-querying every configured (including paid)
+    source for every non-playing player on every run.
+    """
+
+    matches: dict[str, MatchResult] = field(default_factory=dict)
+    unresolved_player_ids: frozenset[str] = field(default_factory=frozenset)
+
+
 @dataclass
 class PlayerReport:
     """Everything the downstream script/graphics/video steps need for one player."""

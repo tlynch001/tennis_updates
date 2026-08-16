@@ -49,6 +49,16 @@ def test_load_config_applies_defaults_for_missing_sections(tmp_path: Path) -> No
     assert config.graphics.width == 1920
     assert config.graphics.height == 1080
     assert config.video.enabled is False
+    assert config.rankings_pool_size == 25
+
+
+def test_load_config_reads_rankings_pool_size(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\nrankings_pool_size: 50\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.rankings_pool_size == 50
 
 
 def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

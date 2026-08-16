@@ -83,6 +83,18 @@ class RankingsSnapshotStore:
         return snapshot_date, rankings
 
     def save_snapshot(self, day: date, tour: str, rankings: list[PlayerRanking]) -> None:
+        """Record the tracked (``top_n``) group's ranks for movement comparison.
+
+        Deliberately scoped to exactly the tracked group, not any larger
+        rankings pool that happened to be fetched in the same run - "NEW"
+        (see :class:`~wta_daily.models.Movement`) specifically means "just
+        entered *this* tracked group", and saving a wider pool here would
+        silently change that meaning (a player already present in a wider
+        pool would show as "same"/"up" instead of "new" upon actually
+        entering the tracked group). Use :meth:`update_players_cache`
+        separately for wider, non-time-sensitive metadata.
+        """
+
         history = self.load_history()
         target_date = day.isoformat()
         history = [
@@ -99,7 +111,7 @@ class RankingsSnapshotStore:
         )
         history.sort(key=lambda entry: (entry["date"], entry.get("tour", "wta")))
         _atomic_write_json(self.history_path, history)
-        self._update_players_cache(rankings)
+        self.update_players_cache(rankings)
         logger.info("Saved rankings snapshot for %s (%s) to %s", day.isoformat(), tour, self.history_path)
 
     def load_players_cache(self) -> dict[str, dict[str, Any]]:
@@ -108,7 +120,18 @@ class RankingsSnapshotStore:
         with self.players_path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
 
-    def _update_players_cache(self, rankings: list[PlayerRanking]) -> None:
+    def update_players_cache(self, rankings: list[PlayerRanking]) -> None:
+        """Merge ``{name, country_code}`` for each of ``rankings`` into the
+        stable player-metadata cache (``players.json``).
+
+        Safe to call with a wider group than the tracked ``top_n`` (e.g. the
+        full rankings pool fetched this run) - unlike :meth:`save_snapshot`,
+        this file has no "movement" concept to protect, it's purely a
+        stable-identity cache for future modules (see the module docstring),
+        so caching more names/countries here is a pure win with no
+        behavioral downside.
+        """
+
         cache = self.load_players_cache()
         for ranking in rankings:
             cache[ranking.player_id] = {

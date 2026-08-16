@@ -13,7 +13,7 @@ from datetime import date
 import pytest
 
 from wta_daily.exceptions import ConfigurationError, PlayerDataError
-from wta_daily.models import MatchResult, PlayerRanking
+from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.matches.best_of import BestOfMatchProvider
 from wta_daily.plugins.registry import matches_registry
@@ -51,12 +51,19 @@ def _register_fake_batch_source(
     name: str,
     *,
     results: dict[str, MatchResult] | None = None,
+    unresolved: set[str] | frozenset[str] | None = None,
     error: Exception | None = None,
 ) -> None:
     """Registers a fake source whose ``get_matches_for_date`` is controlled
     directly (rather than relying on the base class's per-player fallback),
     for tests that exercise ``BestOfMatchProvider.get_matches_for_date``
     specifically.
+
+    By default (``unresolved=None``), this fake behaves like a *confident*
+    day-first source (e.g. ``wta_official`` on a normal day): every
+    requested player not present in ``results`` is reported as a genuine
+    negative, not merely absent. Pass ``unresolved`` to simulate a source
+    that couldn't determine specific players' status instead.
     """
 
     class _FakeBatch(MatchProvider):
@@ -68,12 +75,15 @@ def _register_fake_batch_source(
 
         def get_matches_for_date(
             self, players: Sequence[PlayerRanking], target_date: date
-        ) -> dict[str, MatchResult]:
+        ) -> MatchLookupResult:
             self.calls.append([p.player_id for p in players])
             if error is not None:
                 raise error
             found = results or {}
-            return {p.player_id: found[p.player_id] for p in players if p.player_id in found}
+            matches = {p.player_id: found[p.player_id] for p in players if p.player_id in found}
+            requested_ids = {p.player_id for p in players}
+            unresolved_ids = frozenset(unresolved or ()) & requested_ids
+            return MatchLookupResult(matches=matches, unresolved_player_ids=unresolved_ids)
 
     matches_registry.register(name)(_FakeBatch)
 
@@ -211,31 +221,41 @@ def test_get_matches_for_date_first_source_to_find_a_player_wins() -> None:
     _register_fake_batch_source("batch-second", results={})
 
     provider = BestOfMatchProvider(sources=[{"provider": "batch-first"}, {"provider": "batch-second"}])
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results[PLAYER.player_id] is match
+    assert result.matches[PLAYER.player_id] is match
 
 
 def test_get_matches_for_date_second_source_fills_in_players_first_source_missed() -> None:
+    """The first source genuinely couldn't determine PLAYER_2's status (a
+    realistic stand-in for a source with per-player coverage gaps), so the
+    second source is correctly asked about her and fills in the gap."""
+
     match1 = _match("Opponent 1", date(2026, 8, 15))
     match2 = _match("Opponent 2", date(2026, 8, 15))
-    _register_fake_batch_source("batch-partial-1", results={PLAYER.player_id: match1})
+    _register_fake_batch_source(
+        "batch-partial-1", results={PLAYER.player_id: match1}, unresolved={PLAYER_2.player_id}
+    )
     _register_fake_batch_source("batch-partial-2", results={PLAYER_2.player_id: match2})
 
     provider = BestOfMatchProvider(
         sources=[{"provider": "batch-partial-1"}, {"provider": "batch-partial-2"}]
     )
-    results = provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
 
-    assert results[PLAYER.player_id] is match1
-    assert results[PLAYER_2.player_id] is match2
+    assert result.matches[PLAYER.player_id] is match1
+    assert result.matches[PLAYER_2.player_id] is match2
 
 
-def test_get_matches_for_date_only_queries_remaining_players_on_later_sources() -> None:
-    """Once a player is confirmed, later sources shouldn't be asked about them again."""
+def test_get_matches_for_date_does_not_call_a_later_source_for_a_confirmed_negative() -> None:
+    """The key efficiency property: once a confident source has fully
+    accounted for every requested player (whether they played or not), a
+    later - possibly paid - source should not be queried about any of them,
+    not even the ones who simply didn't play."""
 
-    match = _match("Someone", date(2026, 8, 15))
-    _register_fake_batch_source("batch-found-early", results={PLAYER.player_id: match})
+    _register_fake_batch_source(
+        "batch-confident", results={PLAYER.player_id: _match("Someone", date(2026, 8, 15))}
+    )
 
     class _TrackedSecond(MatchProvider):
         def __init__(self, **_ignored: object) -> None:
@@ -246,20 +266,56 @@ def test_get_matches_for_date_only_queries_remaining_players_on_later_sources() 
 
         def get_matches_for_date(
             self, players: Sequence[PlayerRanking], target_date: date
-        ) -> dict[str, MatchResult]:
+        ) -> MatchLookupResult:
             self.calls.append([p.player_id for p in players])
-            return {}
+            return MatchLookupResult()
 
-    matches_registry.register("batch-tracked-second")(_TrackedSecond)
+    matches_registry.register("batch-tracked-second-confident")(_TrackedSecond)
 
     provider = BestOfMatchProvider(
-        sources=[{"provider": "batch-found-early"}, {"provider": "batch-tracked-second"}]
+        sources=[{"provider": "batch-confident"}, {"provider": "batch-tracked-second-confident"}]
     )
     provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
 
     tracked_second = provider._sources[1]
-    # Only PLAYER_2 remained unresolved after the first source, so that's all
-    # the second source should ever be asked about.
+    # PLAYER_2 wasn't found, but the first source was confident (no
+    # unresolved players), so PLAYER_2 is a confirmed "didn't play" and the
+    # second source should never be called at all.
+    assert tracked_second.calls == []
+
+
+def test_get_matches_for_date_only_queries_genuinely_unresolved_players_on_later_sources() -> None:
+    """A player the first source explicitly couldn't determine is still
+    passed on to the next source - but nobody else is."""
+
+    match = _match("Someone", date(2026, 8, 15))
+    _register_fake_batch_source(
+        "batch-found-early", results={PLAYER.player_id: match}, unresolved={PLAYER_2.player_id}
+    )
+
+    class _TrackedSecond(MatchProvider):
+        def __init__(self, **_ignored: object) -> None:
+            self.calls: list[list[str]] = []
+
+        def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+            raise AssertionError("not used")
+
+        def get_matches_for_date(
+            self, players: Sequence[PlayerRanking], target_date: date
+        ) -> MatchLookupResult:
+            self.calls.append([p.player_id for p in players])
+            return MatchLookupResult()
+
+    matches_registry.register("batch-tracked-second-unresolved")(_TrackedSecond)
+
+    provider = BestOfMatchProvider(
+        sources=[{"provider": "batch-found-early"}, {"provider": "batch-tracked-second-unresolved"}]
+    )
+    provider.get_matches_for_date([PLAYER, PLAYER_2], date(2026, 8, 15))
+
+    tracked_second = provider._sources[1]
+    # Only PLAYER_2 was genuinely unresolved after the first source, so
+    # that's all the second source should ever be asked about.
     assert tracked_second.calls == [[PLAYER_2.player_id]]
 
 
@@ -270,9 +326,10 @@ def test_get_matches_for_date_confirms_played_false_when_a_working_source_says_s
     _register_fake_batch_source("batch-clean-no-match", results={})
 
     provider = BestOfMatchProvider(sources=[{"provider": "batch-clean-no-match"}])
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_get_matches_for_date_one_source_erroring_does_not_block_another() -> None:
@@ -281,9 +338,9 @@ def test_get_matches_for_date_one_source_erroring_does_not_block_another() -> No
     _register_fake_batch_source("batch-fine", results={PLAYER.player_id: match})
 
     provider = BestOfMatchProvider(sources=[{"provider": "batch-broken"}, {"provider": "batch-fine"}])
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results[PLAYER.player_id] is match
+    assert result.matches[PLAYER.player_id] is match
 
 
 def test_get_matches_for_date_raises_only_when_every_source_fails() -> None:
@@ -305,9 +362,9 @@ def test_get_matches_for_date_defaults_to_the_per_player_fallback_when_a_source_
     _register_fake_source("legacy-only", result=_match("Someone", date(2026, 8, 15)))
 
     provider = BestOfMatchProvider(sources=[{"provider": "legacy-only"}])
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results[PLAYER.player_id].opponent == "Someone"
+    assert result.matches[PLAYER.player_id].opponent == "Someone"
 
 
 def test_defaults_to_wta_official_and_live_tennis_api_when_unconfigured(

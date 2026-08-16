@@ -77,3 +77,25 @@ def test_save_snapshot_overwrites_existing_entry_for_same_day(tmp_path: Path) ->
     history = store.load_history()
     assert len(history) == 1
     assert history[0]["rankings"][0]["rank"] == 5
+
+
+def test_update_players_cache_accepts_a_wider_group_than_the_history(tmp_path: Path) -> None:
+    """A wider rankings pool (e.g. Top 25 fetched alongside a Top 10 report,
+    in the same single API request) can safely enrich the player-metadata
+    cache without affecting movement history at all - see the method's
+    docstring for why these two files are deliberately decoupled."""
+
+    store = RankingsSnapshotStore(tmp_path)
+    tracked = [_ranking(1, "a"), _ranking(2, "b")]
+    pool = tracked + [_ranking(11, "outside-top-n")]
+
+    store.save_snapshot(date(2026, 8, 1), "wta", tracked)
+    store.update_players_cache(pool)
+
+    cache = store.load_players_cache()
+    assert "outside-top-n" in cache
+
+    history = store.load_history()
+    tracked_ids = {r["player_id"] for r in history[0]["rankings"]}
+    assert tracked_ids == {"a", "b"}
+    assert "outside-top-n" not in tracked_ids
