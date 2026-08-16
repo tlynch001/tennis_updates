@@ -44,36 +44,55 @@ class _FixedLatestMatchProvider(MatchProvider):
 def test_default_fallback_accepts_a_match_on_the_exact_target_date() -> None:
     provider = _FixedLatestMatchProvider(match=_match(date(2026, 8, 15)))
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert PLAYER.player_id in results
+    assert PLAYER.player_id in result.matches
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_default_fallback_rejects_a_match_on_a_different_date() -> None:
     """This is the key safety property: an older "latest known match" must
-    never be accepted as if it happened on the target date."""
+    never be accepted as if it happened on the target date. Since the
+    lookup itself succeeded, this is a confirmed negative, not unresolved."""
 
     provider = _FixedLatestMatchProvider(match=_match(date(2026, 6, 29)))
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_default_fallback_rejects_a_match_with_an_unconfirmed_date() -> None:
     provider = _FixedLatestMatchProvider(match=_match(None))
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset()
 
 
 def test_default_fallback_handles_no_match_at_all() -> None:
     provider = _FixedLatestMatchProvider(match=None)
 
-    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert results == {}
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset()
+
+
+def test_default_fallback_reports_a_failed_lookup_as_unresolved_not_a_confirmed_negative() -> None:
+    """A player whose lookup genuinely raised is different from one whose
+    lookup succeeded but simply returned an older/no match - the former
+    must be flagged unresolved so a composite provider can still try
+    another source for her specifically."""
+
+    provider = _FixedLatestMatchProvider(error=RuntimeError("simulated failure"))
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset({PLAYER.player_id})
 
 
 def test_default_fallback_isolates_one_players_failure_from_others() -> None:
@@ -93,7 +112,8 @@ def test_default_fallback_isolates_one_players_failure_from_others() -> None:
         PlayerRanking(rank=2, player_id="BROKEN", name="Broken Player", country_code="FRA", points=1000),
     ]
 
-    results = provider.get_matches_for_date(players, date(2026, 8, 15))
+    result = provider.get_matches_for_date(players, date(2026, 8, 15))
 
-    assert PLAYER.player_id in results
-    assert "BROKEN" not in results
+    assert PLAYER.player_id in result.matches
+    assert "BROKEN" not in result.matches
+    assert result.unresolved_player_ids == frozenset({"BROKEN"})

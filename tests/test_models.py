@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from wta_daily.models import DailyReport, MatchResult, Movement, PlayerRanking, PlayerReport
+from wta_daily.models import (
+    DailyReport,
+    MatchLookupResult,
+    MatchResult,
+    Movement,
+    PlayerRanking,
+    PlayerReport,
+)
 
 
 def test_player_ranking_round_trip() -> None:
@@ -181,3 +188,33 @@ def test_movement_new_and_unknown_are_distinct_values() -> None:
     assert Movement.NEW != Movement.UNKNOWN
     assert Movement.NEW.value == "new"
     assert Movement.UNKNOWN.value == "unknown"
+
+
+def test_match_lookup_result_defaults_to_empty() -> None:
+    result = MatchLookupResult()
+    assert result.matches == {}
+    assert result.unresolved_player_ids == frozenset()
+
+
+def test_match_lookup_result_distinguishes_confirmed_negative_from_unresolved() -> None:
+    """A player_id absent from both fields is a confirmed 'did not play' -
+    distinct from one explicitly listed as unresolved, which a composite
+    provider should keep trying other sources for. See the module docstring
+    and BestOfMatchProvider for why this distinction matters."""
+
+    match = MatchResult(
+        opponent="Opponent",
+        tournament="Test Open",
+        round="Final",
+        score="6-4 6-4",
+        won=True,
+        match_date=date(2026, 8, 15),
+    )
+    result = MatchLookupResult(matches={"p1": match}, unresolved_player_ids=frozenset({"p2"}))
+
+    assert "p1" in result.matches
+    assert "p2" not in result.matches
+    assert "p2" in result.unresolved_player_ids
+    # p3 was checked and confirmed not to have played - neither dict mentions her.
+    assert "p3" not in result.matches
+    assert "p3" not in result.unresolved_player_ids

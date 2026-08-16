@@ -8,10 +8,8 @@ from wta_daily.models import MatchResult, PlayerRanking
 from wta_daily.pipeline import DailyPipeline
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.matches.sample import SampleMatchProvider  # noqa: F401 - registers plugin
-from wta_daily.plugins.rankings.sample import (
-    SampleRankingsProvider,  # noqa: F401 - registers plugin
-)
-from wta_daily.plugins.registry import matches_registry
+from wta_daily.plugins.rankings.sample import SampleRankingsProvider
+from wta_daily.plugins.registry import matches_registry, rankings_registry
 
 from .conftest import SAMPLE_MATCHES_FIXTURE, SAMPLE_RANKINGS_FIXTURE
 
@@ -77,6 +75,80 @@ def test_pipeline_computes_movement_on_second_run(tmp_path: Path) -> None:
     # Same fixture data both days => ranks are unchanged => "same", now that
     # a real previous snapshot exists (as opposed to "unknown" on day one).
     assert all(p.movement.value == "same" for p in report.players)
+
+
+class _TrackingRankingsProvider:
+    """Wraps SampleRankingsProvider, counting how many times it's called."""
+
+    def __init__(self, fixture_path: str, **_ignored: object) -> None:
+        self._inner = SampleRankingsProvider(fixture_path=fixture_path)
+        self.calls: list[int] = []
+
+    def get_top_n(self, n: int) -> list[PlayerRanking]:
+        self.calls.append(n)
+        return self._inner.get_top_n(n)
+
+
+def test_pipeline_fetches_rankings_exactly_once_per_run(tmp_path: Path) -> None:
+    """The core rankings-efficiency property: no matter how many downstream
+    steps need ranking data (top_n report, movement comparison, the wider
+    pool), only one rankings request should ever be made in one run."""
+
+    provider_name = "tracking-rankings-for-tests"
+    rankings_registry.register(provider_name)(_TrackingRankingsProvider)
+
+    config = _make_config(tmp_path)
+    config.rankings_provider = ProviderConfig(
+        name=provider_name, options={"fixture_path": str(SAMPLE_RANKINGS_FIXTURE)}
+    )
+
+    pipeline = DailyPipeline(config)
+    pipeline.run(date(2026, 8, 9))
+
+    assert pipeline._rankings_provider.calls == [config.rankings_pool_size]
+
+
+def test_pipeline_exposes_the_wider_rankings_pool_for_future_reuse(tmp_path: Path) -> None:
+    """A larger pool than `top_n` is fetched in that single rankings
+    request and kept available on the pipeline instance - e.g. for a future
+    featured-player lookup outside the tracked group - without ever
+    issuing a second rankings request for it."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 5  # sample fixture has 10 players; default pool_size (25) covers all of them
+
+    pipeline = DailyPipeline(config)
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert len(report.players) == 5
+    assert len(pipeline.last_rankings_pool) == 10
+    pool_ranks = {r.rank for r in pipeline.last_rankings_pool}
+    assert pool_ranks == set(range(1, 11))
+
+
+def test_pipeline_caches_wider_pool_metadata_without_affecting_movement_history(
+    tmp_path: Path,
+) -> None:
+    """Ranks 6-10 (outside the tracked top_n=5) should still land in the
+    stable player-metadata cache (players.json) as a side benefit of
+    fetching the wider pool - but must NOT appear in the movement-comparison
+    snapshot history, which stays scoped to exactly the tracked group (see
+    RankingsSnapshotStore.save_snapshot's docstring)."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 5
+
+    DailyPipeline(config).run(date(2026, 8, 9))
+
+    import json
+
+    players_cache = json.loads((config.data_dir / "players.json").read_text())
+    assert "sample-008" in players_cache  # rank 8, outside top_n
+
+    history = json.loads((config.data_dir / "rankings-history.json").read_text())
+    tracked_ids = {r["player_id"] for r in history[0]["rankings"]}
+    assert "sample-008" not in tracked_ids
+    assert len(tracked_ids) == 5
 
 
 def test_pipeline_marks_genuine_new_entrant_when_snapshot_exists(tmp_path: Path) -> None:

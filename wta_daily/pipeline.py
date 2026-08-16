@@ -13,6 +13,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
+from wta_daily import api_usage
 from wta_daily.config import AppConfig
 from wta_daily.exceptions import (
     DataProviderError,
@@ -47,6 +48,13 @@ class DailyPipeline:
         self._config = config
         self._repo_root = repo_root or Path.cwd()
         self._snapshot_store = RankingsSnapshotStore(config.data_dir)
+        #: The full rankings response from the most recent run, before it was
+        #: sliced down to `top_n` for the report - e.g. Top 25 when `top_n`
+        #: is 10 and `rankings_pool_size` is 25 (see AppConfig). Exposed so a
+        #: future featured-player lookup for someone just outside the
+        #: tracked Top N can reuse this instead of firing a brand new
+        #: rankings request for one player.
+        self.last_rankings_pool: list[PlayerRanking] = []
 
         self._rankings_provider = rankings_registry.create(
             config.rankings_provider.name, network=config.network, **config.rankings_provider.options
@@ -64,6 +72,7 @@ class DailyPipeline:
     def run(self, report_date: date | None = None) -> DailyReport:
         report_date = report_date or date.today()
         logger.info("=== WTA Daily pipeline starting for %s ===", report_date.isoformat())
+        api_usage.reset()
 
         report = self._build_report(report_date)
 
@@ -97,12 +106,23 @@ class DailyPipeline:
             )
         else:
             logger.info("Finished successfully.")
+        api_usage.log_summary()
         return report
 
     def _build_report(self, report_date: date) -> DailyReport:
-        logger.info("Downloading rankings...")
-        rankings: list[PlayerRanking] = self._rankings_provider.get_top_n(self._config.top_n)
-        logger.info("Retrieved %d rankings.", len(rankings))
+        # Fetch a somewhat larger pool than just `top_n` (e.g. Top 25 for a
+        # Top 10 report) in the *same* single rankings request, rather than
+        # a separate one - this is what lets a future featured-player
+        # lookup for someone just outside the tracked group reuse
+        # `self.last_rankings_pool` instead of firing its own request. The
+        # report itself is still built from exactly `top_n` players; nothing
+        # about what gets reported changes.
+        pool_size = max(self._config.top_n, self._config.rankings_pool_size)
+        logger.info("Downloading rankings (top %d)...", pool_size)
+        pool: list[PlayerRanking] = self._rankings_provider.get_top_n(pool_size)
+        self.last_rankings_pool = pool
+        rankings: list[PlayerRanking] = pool[: self._config.top_n]
+        logger.info("Retrieved %d rankings (%d tracked).", len(pool), len(rankings))
 
         previous = self._snapshot_store.get_previous_snapshot(report_date, self._config.tour)
         has_previous_snapshot = previous is not None
@@ -151,7 +171,13 @@ class DailyPipeline:
                 )
             )
 
+        # Movement history stays scoped to exactly the tracked group (see
+        # RankingsSnapshotStore.save_snapshot's docstring for why widening
+        # this would silently break "NEW" semantics); the wider pool's
+        # names/countries are still cached (safe, non-time-sensitive) for
+        # future use, at no extra API cost since it's the same response.
         self._snapshot_store.save_snapshot(report_date, self._config.tour, rankings)
+        self._snapshot_store.update_players_cache(pool)
         return DailyReport(
             report_date=report_date,
             tour=self._config.tour,
@@ -170,16 +196,36 @@ class DailyPipeline:
         ``played: false`` *with* the returned error message attached, which
         is different from a player who genuinely didn't play (no error).
         See ``PlayerReport.match_error``.
+
+        A player left ``unresolved`` by every configured source (rather
+        than confidently confirmed either way) is also reported as
+        ``played: false`` for this report - same downstream behavior as
+        before this method existed - but is called out in the log, since
+        that is worth an operator's attention even though it isn't a hard
+        failure.
         """
 
         try:
-            return self._match_provider.get_matches_for_date(rankings, target_date), None
+            result = self._match_provider.get_matches_for_date(rankings, target_date)
         except (PlayerDataError, DataProviderError) as exc:
             logger.error("Match lookup failed for %s: %s", target_date, exc)
             return {}, str(exc)
         except Exception as exc:  # noqa: BLE001 - this step must never abort the run
             logger.exception("Unexpected error fetching matches for %s", target_date)
             return {}, f"Unexpected error fetching matches for {target_date}: {exc}"
+
+        if result.unresolved_player_ids:
+            unresolved_names = [
+                r.name for r in rankings if r.player_id in result.unresolved_player_ids
+            ]
+            logger.warning(
+                "Could not confirm match status for %s on %s (every configured source was "
+                "inconclusive); reporting played: false for %s without a match_error.",
+                ", ".join(unresolved_names) or f"{len(result.unresolved_player_ids)} player(s)",
+                target_date.isoformat(),
+                "them" if len(unresolved_names) != 1 else "her",
+            )
+        return result.matches, None
 
     def _render_graphics(self, report: DailyReport, store: DailyOutputStore) -> None:
         try:

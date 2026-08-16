@@ -94,7 +94,7 @@ from typing import Any
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import DataProviderError, PlayerDataError
-from wta_daily.models import MatchResult, PlayerRanking
+from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.registry import matches_registry
 from wta_daily.plugins.wta_api_client import DEFAULT_BASE_URL, WtaOfficialApiClient
@@ -260,11 +260,24 @@ class WtaOfficialMatchProvider(MatchProvider):
 
     def get_matches_for_date(
         self, players: Sequence[PlayerRanking], target_date: date
-    ) -> dict[str, MatchResult]:
+    ) -> MatchLookupResult:
         """Day-first lookup: which of ``players`` have a confirmed finished
         singles match on ``target_date``, read directly from the
         tournament-level feed - see the module docstring for why this exists
         and how it differs from (and fixes) the per-player approach.
+
+        A player absent from ``matches`` *and* absent from
+        ``unresolved_player_ids`` is a positive, confident "did not play
+        that day" - every currently active tournament's full match list was
+        read and she wasn't in it. A player only ends up in
+        ``unresolved_player_ids`` if fetching at least one active
+        tournament's match list failed outright (so we genuinely can't rule
+        her out - she might be exactly the player whose match was in the
+        tournament we couldn't read), which is the one case where a
+        composite provider should still try another source for her. This
+        distinction is what lets ``BestOfMatchProvider`` skip its (often
+        paid) fallback sources entirely on a normal day, when this method
+        alone can already speak confidently for every tracked player.
         """
 
         try:
@@ -276,6 +289,7 @@ class WtaOfficialMatchProvider(MatchProvider):
 
         player_ids = {p.player_id for p in players}
         results: dict[str, MatchResult] = {}
+        any_tournament_fetch_failed = False
         for group_id, year, tournament_name in active:
             try:
                 fixtures = self._get_tournament_matches(group_id, year)
@@ -287,6 +301,7 @@ class WtaOfficialMatchProvider(MatchProvider):
                     target_date,
                     exc,
                 )
+                any_tournament_fetch_failed = True
                 continue
 
             for fixture in fixtures:
@@ -304,7 +319,17 @@ class WtaOfficialMatchProvider(MatchProvider):
                         result = self._build_match_result_from_fixture(fixture, slot, tournament_name)
                         if result is not None:
                             results[player_id] = result
-        return results
+
+        # Only players still unaccounted for are genuinely ambiguous, and
+        # only if some tournament's data was actually unreadable - if every
+        # active tournament was read successfully, an absent player is a
+        # confirmed negative, not a gap.
+        unresolved: frozenset[str] = (
+            frozenset(pid for pid in player_ids if pid not in results)
+            if any_tournament_fetch_failed
+            else frozenset()
+        )
+        return MatchLookupResult(matches=results, unresolved_player_ids=unresolved)
 
     def _find_active_tournaments(self, target_date: date) -> list[tuple[Any, Any, str]]:
         """(groupId, year, tournamentName) triples whose date range covers ``target_date``.

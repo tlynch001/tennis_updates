@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from wta_daily.models import DailyReport, MatchResult, PlayerRanking, PlayerReport
+from wta_daily.models import DailyReport, MatchLookupResult, MatchResult, PlayerRanking, PlayerReport
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +49,23 @@ class MatchProvider(ABC):
       with no signal that it might not be current.
     * :meth:`get_matches_for_date` - "which of these players have a
       *confirmed* completed match on *this exact date*, and what happened?"
-      A player absent from the result played that day, per this provider's
-      information - never a stale substitute. The default implementation
-      below falls back to :meth:`get_latest_match` filtered by date, which
-      is honest (it will never claim a false date) but can under-report a
-      real match if a provider's per-player history hasn't ingested it yet
-      - a provider whose data source supports a genuine day-indexed lookup
-      (see ``wta_official``, which scans the tournament-level feed instead
-      of the slower per-player one) should override this for completeness.
+      Returns a :class:`~wta_daily.models.MatchLookupResult`: a player
+      absent from its ``matches`` **and** its ``unresolved_player_ids``
+      played that day, per this provider's information - never a stale
+      substitute. A player in ``unresolved_player_ids`` is different: this
+      source genuinely could not determine her status (e.g. a fetch
+      failure), so a caller combining multiple sources
+      (:class:`~wta_daily.plugins.matches.best_of.BestOfMatchProvider`)
+      should keep trying other sources for her specifically - not for every
+      player this source confidently ruled out, which is what makes it safe
+      to skip a paid fallback source entirely on days it isn't needed. The
+      default implementation below falls back to :meth:`get_latest_match`
+      filtered by date, which is honest (it will never claim a false date)
+      but can under-report a real match if a provider's per-player history
+      hasn't ingested it yet - a provider whose data source supports a
+      genuine day-indexed lookup (see ``wta_official``, which scans the
+      tournament-level feed instead of the slower per-player one) should
+      override this for completeness.
     """
 
     name: str = "base"
@@ -69,20 +78,21 @@ class MatchProvider(ABC):
 
     def get_matches_for_date(
         self, players: Sequence[PlayerRanking], target_date: date
-    ) -> dict[str, MatchResult]:
-        """Return ``{player_id: MatchResult}`` for players confirmed to have
-        completed a match on ``target_date``. Players not present in the
-        result should be treated as ``played: false`` for that date - never
-        substitute an older match.
+    ) -> MatchLookupResult:
+        """Return matches confirmed on ``target_date`` for ``players``.
 
         Default implementation: call :meth:`get_latest_match` per player and
         keep the result only if its ``match_date`` exactly equals
-        ``target_date``. Failures are isolated per player (one player's
-        lookup failing does not affect the others) since this default is
-        built directly on the existing per-player contract.
+        ``target_date``. A player whose lookup raises is reported as
+        ``unresolved`` (this default genuinely doesn't know her status,
+        unlike a player whose lookup *succeeded* but simply didn't return a
+        match on this date, which is a confirmed negative). Failures are
+        isolated per player either way - one player's lookup failing does
+        not affect the others.
         """
 
-        results: dict[str, MatchResult] = {}
+        matches: dict[str, MatchResult] = {}
+        unresolved: set[str] = set()
         for player in players:
             try:
                 match = self.get_latest_match(player)
@@ -90,10 +100,11 @@ class MatchProvider(ABC):
                 logger.info(
                     "get_latest_match failed for %s while checking %s: %s", player.name, target_date, exc
                 )
+                unresolved.add(player.player_id)
                 continue
             if match is not None and match.match_date == target_date:
-                results[player.player_id] = match
-        return results
+                matches[player.player_id] = match
+        return MatchLookupResult(matches=matches, unresolved_player_ids=frozenset(unresolved))
 
 
 class ScriptGenerator(ABC):

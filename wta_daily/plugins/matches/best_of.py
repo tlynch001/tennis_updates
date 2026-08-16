@@ -39,7 +39,7 @@ from typing import Any
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import ConfigurationError, PlayerDataError
-from wta_daily.models import MatchResult, PlayerRanking
+from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.registry import matches_registry
 
@@ -125,13 +125,25 @@ class BestOfMatchProvider(MatchProvider):
 
     def get_matches_for_date(
         self, players: Sequence[PlayerRanking], target_date: date
-    ) -> dict[str, MatchResult]:
-        """Ask every source in turn; a player found by any one of them is
-        confidently reported as having played (sources agree on real-world
-        facts, so the first hit is as good as any). A player still
-        unresolved after a source that itself completed without error is
-        confidently reported as ``played: false`` by that source - only if
-        *every* source fails outright do we raise, rather than guess.
+    ) -> MatchLookupResult:
+        """Ask sources in turn, but only for players still genuinely in doubt.
+
+        A player found by any source is confidently reported as having
+        played (sources agree on real-world facts, so the first hit is as
+        good as any) and is removed from consideration. A player a source
+        *confidently* reports as not having played (present in neither that
+        source's ``matches`` nor its ``unresolved_player_ids`` - see
+        :class:`~wta_daily.models.MatchLookupResult`) is **also** removed:
+        that source did the work of checking and the answer is a genuine
+        negative, so there is nothing left for another source to usefully
+        add. Only a player a source could not determine either way is
+        carried forward to the next configured source.
+
+        This is what avoids calling a paid fallback source at all on a
+        typical day, when the (free, day-first) primary source has already
+        confidently accounted for every tracked player - not just the ones
+        who played. Only if *every* source fails outright for a player do
+        we raise, rather than guess.
         """
 
         remaining: dict[str, PlayerRanking] = {p.player_id: p for p in players}
@@ -144,7 +156,7 @@ class BestOfMatchProvider(MatchProvider):
                 break
             source_name = getattr(source, "name", type(source).__name__)
             try:
-                source_results = source.get_matches_for_date(list(remaining.values()), target_date)
+                source_result = source.get_matches_for_date(list(remaining.values()), target_date)
             except Exception as exc:  # noqa: BLE001 - one source's failure must not block others
                 logger.info(
                     "Match source %s failed while checking %s: %s", source_name, target_date, exc
@@ -153,9 +165,15 @@ class BestOfMatchProvider(MatchProvider):
                 continue
 
             any_source_succeeded = True
-            for player_id, match in source_results.items():
+            for player_id, match in source_result.matches.items():
                 if player_id in remaining:
                     results[player_id] = match
+                    del remaining[player_id]
+
+            for player_id in list(remaining):
+                if player_id not in source_result.unresolved_player_ids:
+                    # Confidently ruled out by a source that itself
+                    # completed successfully - no need to ask anyone else.
                     del remaining[player_id]
 
         if remaining and not any_source_succeeded:
@@ -163,4 +181,4 @@ class BestOfMatchProvider(MatchProvider):
                 f"All match sources failed while checking {target_date} for "
                 f"{len(remaining)} player(s): " + "; ".join(failures)
             )
-        return results
+        return MatchLookupResult(matches=results, unresolved_player_ids=frozenset(remaining))

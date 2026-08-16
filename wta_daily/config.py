@@ -234,6 +234,15 @@ class AppConfig:
 
     tour: str = "wta"
     top_n: int = 10
+    #: How many players to actually request in the single rankings API call
+    #: each run (the response is then sliced down to `top_n` for the
+    #: report). Deliberately >= top_n so a modest amount of headroom (e.g.
+    #: Top 25 for a Top 10 report) is fetched "for free" in that same
+    #: request, available for future needs (featured-player lookups,
+    #: broader movement comparisons) without ever issuing a second rankings
+    #: request. Effective pool size is always at least `top_n`. See the
+    #: README's "Understanding API usage" section.
+    rankings_pool_size: int = 25
     data_dir: Path = Path("data")
     output_dir: Path = Path("output")
     log_dir: Path = Path("logs")
@@ -264,6 +273,7 @@ class AppConfig:
         return cls(
             tour=data.get("tour", defaults.tour),
             top_n=int(data.get("top_n", defaults.top_n)),
+            rankings_pool_size=int(data.get("rankings_pool_size", defaults.rankings_pool_size)),
             data_dir=Path(data.get("data_dir", defaults.data_dir)),
             output_dir=Path(data.get("output_dir", defaults.output_dir)),
             log_dir=Path(data.get("log_dir", defaults.log_dir)),

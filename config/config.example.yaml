@@ -12,6 +12,16 @@ tour: wta
 # How many players to track (the brief's "Top 10", but flip to 25 any time).
 top_n: 10
 
+# How many players to actually *request* in the single rankings API call
+# each run - always at least `top_n`. The extra entries (e.g. ranks 11-25
+# when top_n is 10) are fetched "for free" in that same one request and
+# reused for movement-comparison snapshot history and any future
+# featured-player lookups, so a player just outside the tracked Top N never
+# needs a dedicated request of her own. Only raise this well beyond top_n if
+# you have a concrete near-term need (e.g. planned featured-player range) -
+# see README.md's "Understanding API usage" section.
+rankings_pool_size: 25
+
 # Where persistent data (rankings history, player cache) and generated
 # output live. Both are relative to the current working directory unless
 # given as absolute paths.
