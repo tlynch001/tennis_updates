@@ -27,14 +27,29 @@ _SYSTEM_PROMPT = (
     "YouTube video covering the WTA Top N rankings. Write natural, conversational, "
     "broadcast-quality prose (not bullet points, not markdown). Mention a ranking change "
     "only when it actually happened; otherwise say the player 'remains' at her rank. "
-    "For every player, mention whether they won or lost their most recent match, the "
-    "opponent, tournament, round, and score when available. Avoid repeating the same "
-    "sentence structure twice in a row. Keep the whole script long enough to read aloud "
-    "in about the requested number of minutes."
+    "The 'movement' field for each player is one of up/down/same/new/unknown. Treat "
+    "'unknown' very differently from 'new': 'unknown' means there is no previous "
+    "ranking on record to compare against (e.g. this is the first report ever produced), "
+    "so you must NOT say the player is new, just entered, or debuting in the Top N - "
+    "simply state her current rank neutrally (e.g. 'sits at number 4 today'). Only use "
+    "'new'/'entered'/'debut' language when movement is literally 'new'. "
+    "The 'Latest match' field for each player describes a match confirmed to have been "
+    "completed on the specific target date given below (not just 'whenever her last known "
+    "match was') - if it says 'no completed match to report', that means she did NOT play "
+    "on that date; do not invent or imply a match happened, and do not describe an older "
+    "result instead. Mention whether they won or lost, the opponent, tournament, round, and "
+    "score when a match is given; if no match information is available, say so plainly "
+    "rather than guessing. Avoid repeating the same sentence structure twice in a row. Keep "
+    "the whole script long enough to read aloud in about the requested number of minutes. "
+    "End the script with a single, clear sign-off line "
+    "(e.g. thanking viewers and mentioning you'll be back tomorrow) - that sign-off must "
+    "be the very last line of the script, with no further commentary, statistics, or "
+    "caveats added after it."
 )
 
 
 def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
+    target_date = report.match_target_date
     lines = [
         f"Date: {report.report_date.isoformat()}",
         f"Tour: {report.tour.upper()}",
@@ -42,9 +57,14 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             f"Target length: {config.target_minutes_low:.0f}-{config.target_minutes_high:.0f} minutes "
             f"at roughly {config.words_per_minute} words per minute."
         ),
-        "",
-        "Players, ranked 1..N:",
     ]
+    if target_date is not None:
+        lines.append(
+            f"Match target date: {target_date.isoformat()} - every 'Latest match' below is "
+            f"confirmed to have been completed on this date, or is explicitly absent if the "
+            f"player did not play on it."
+        )
+    lines.extend(["", "Players, ranked 1..N:"])
     for player in report.players:
         match_desc = "no completed match to report"
         if player.match is not None:

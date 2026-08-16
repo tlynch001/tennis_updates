@@ -26,12 +26,18 @@ class HttpClient:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": self._network.user_agent})
 
-    def get_json(self, url: str, *, params: dict[str, Any] | None = None) -> Any:
+    def get_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
         last_exc: Exception | None = None
         for attempt in range(1, self._network.max_retries + 1):
             try:
                 response = self._session.get(
-                    url, params=params, timeout=self._network.timeout_seconds
+                    url, params=params, headers=headers, timeout=self._network.timeout_seconds
                 )
                 response.raise_for_status()
                 return response.json()

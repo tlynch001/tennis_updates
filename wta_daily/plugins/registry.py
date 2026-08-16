@@ -86,6 +86,9 @@ def load_builtin_plugins() -> None:
     """
 
     from wta_daily.graphics import pillow_renderer  # noqa: F401
+    from wta_daily.plugins.matches import api_tennis as _matches_api_tennis  # noqa: F401
+    from wta_daily.plugins.matches import best_of as _matches_best_of  # noqa: F401
+    from wta_daily.plugins.matches import live_tennis_api as _matches_live_tennis_api  # noqa: F401
     from wta_daily.plugins.matches import sample as _matches_sample  # noqa: F401
     from wta_daily.plugins.matches import wta_official as _matches_wta  # noqa: F401
     from wta_daily.plugins.rankings import sample as _rankings_sample  # noqa: F401

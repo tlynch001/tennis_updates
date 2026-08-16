@@ -12,10 +12,15 @@ module instead of touching existing code.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from wta_daily.models import DailyReport, MatchResult, PlayerRanking, PlayerReport
+
+logger = logging.getLogger(__name__)
 
 
 class RankingsProvider(ABC):
@@ -30,7 +35,29 @@ class RankingsProvider(ABC):
 
 
 class MatchProvider(ABC):
-    """Retrieves the most recent completed match for a given player."""
+    """Retrieves completed match results for players.
+
+    There are two different questions a caller can ask, and they are **not**
+    interchangeable:
+
+    * :meth:`get_latest_match` - "what's the most recent completed match
+      this provider knows about for this player, whenever it was?" This is
+      useful context, but answering "did she play yesterday" by calling
+      this and hoping the answer happens to be recent is exactly the bug
+      that shipped in production: a source whose per-player history lags
+      the current tournament week will confidently return an old match
+      with no signal that it might not be current.
+    * :meth:`get_matches_for_date` - "which of these players have a
+      *confirmed* completed match on *this exact date*, and what happened?"
+      A player absent from the result played that day, per this provider's
+      information - never a stale substitute. The default implementation
+      below falls back to :meth:`get_latest_match` filtered by date, which
+      is honest (it will never claim a false date) but can under-report a
+      real match if a provider's per-player history hasn't ingested it yet
+      - a provider whose data source supports a genuine day-indexed lookup
+      (see ``wta_official``, which scans the tournament-level feed instead
+      of the slower per-player one) should override this for completeness.
+    """
 
     name: str = "base"
 
@@ -39,6 +66,34 @@ class MatchProvider(ABC):
         """Return the player's most recent completed match, or ``None`` if the
         player has no recorded match (e.g. an unreleased qualifier).
         """
+
+    def get_matches_for_date(
+        self, players: Sequence[PlayerRanking], target_date: date
+    ) -> dict[str, MatchResult]:
+        """Return ``{player_id: MatchResult}`` for players confirmed to have
+        completed a match on ``target_date``. Players not present in the
+        result should be treated as ``played: false`` for that date - never
+        substitute an older match.
+
+        Default implementation: call :meth:`get_latest_match` per player and
+        keep the result only if its ``match_date`` exactly equals
+        ``target_date``. Failures are isolated per player (one player's
+        lookup failing does not affect the others) since this default is
+        built directly on the existing per-player contract.
+        """
+
+        results: dict[str, MatchResult] = {}
+        for player in players:
+            try:
+                match = self.get_latest_match(player)
+            except Exception as exc:  # noqa: BLE001 - isolate every player, no matter the failure
+                logger.info(
+                    "get_latest_match failed for %s while checking %s: %s", player.name, target_date, exc
+                )
+                continue
+            if match is not None and match.match_date == target_date:
+                results[player.player_id] = match
+        return results
 
 
 class ScriptGenerator(ABC):

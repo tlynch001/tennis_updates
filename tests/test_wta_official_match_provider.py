@@ -1,0 +1,604 @@
+"""Unit tests for :mod:`wta_daily.plugins.matches.wta_official`.
+
+These mock the underlying :class:`WtaOfficialApiClient` calls (never hitting
+the network) with response shapes captured from the real API, and are the
+regression suite for the August 2026 production incident: tournament start
+dates being reported as match dates, and stale/incomplete player-match
+history not being handled defensively.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Any
+
+import pytest
+
+from wta_daily.exceptions import PlayerDataError
+from wta_daily.models import PlayerRanking
+from wta_daily.plugins.matches.wta_official import WtaOfficialMatchProvider
+
+PLAYER = PlayerRanking(rank=1, player_id="P1", name="Test Player", country_code="USA", points=8000)
+
+
+def _player_match(
+    *,
+    round_name: str = "R16",
+    scores: str = "6-4 6-2",
+    winner: int = 1,
+    s_d_flag: str = "S",
+    opponent_id: str | None = "P2",
+    opponent_name: str = "Opponent Name",
+    tournament_name: str = "SAMPLE OPEN",
+    tournament_group_id: int | None = 900,
+    tournament_year: int | None = 2026,
+    tournament_start_date: str = "2026-01-01T00:00:00+00:00",
+    surface: str = "HARD",
+) -> dict[str, Any]:
+    """Build one entry shaped like ``GET /players/{id}/matches`` returns."""
+
+    return {
+        "s_d_flag": s_d_flag,
+        "scores": scores,
+        "player_1": "P1",
+        "player_2": "P2",
+        "winner": winner,
+        "opponent": ({"id": opponent_id, "fullName": opponent_name} if opponent_id else None),
+        "team_name_2": opponent_name,
+        "TournamentName": tournament_name,
+        "round_name": round_name,
+        "Surface": surface,
+        # The buggy old behavior copied this straight into match_date - it
+        # must never end up as the reported match_date.
+        "StartDate": tournament_start_date,
+        "tournament": {
+            "tournamentGroup": {"id": tournament_group_id},
+            "year": tournament_year,
+            "startDate": tournament_start_date[:10],
+        },
+    }
+
+
+def _tournament_fixture(
+    *,
+    player_a: str = "P1",
+    player_b: str = "P2",
+    match_state: str = "F",
+    match_timestamp: str | None = "2026-01-05T18:30:00+00:00",
+    draw_match_type: str = "S",
+) -> dict[str, Any]:
+    """Build one entry shaped like ``GET /tournaments/{id}/{year}/matches`` returns."""
+
+    return {
+        "DrawMatchType": draw_match_type,
+        "PlayerIDA": player_a,
+        "PlayerIDB": player_b,
+        "MatchState": match_state,
+        "MatchTimeStamp": match_timestamp,
+    }
+
+
+def _provider_with_mocked_client(
+    monkeypatch: pytest.MonkeyPatch,
+    player_matches: list[dict[str, Any]],
+    tournament_matches: list[dict[str, Any]] | None = None,
+) -> WtaOfficialMatchProvider:
+    provider = WtaOfficialMatchProvider()
+    monkeypatch.setattr(
+        provider._client, "get_player_matches", lambda player_id, page_size=25: player_matches
+    )
+
+    def _fake_get_tournament_matches(group_id: Any, year: Any, *, page_size: int = 500) -> list[dict]:
+        if tournament_matches is None:
+            raise RuntimeError("simulated tournament-matches endpoint failure")
+        return tournament_matches
+
+    monkeypatch.setattr(provider._client, "get_tournament_matches", _fake_get_tournament_matches)
+    return provider
+
+
+def test_match_date_comes_from_tournament_feed_not_tournament_start_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The core regression test: StartDate must never leak into match_date."""
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match(tournament_start_date="2026-01-01T00:00:00+00:00")],
+        tournament_matches=[_tournament_fixture(match_timestamp="2026-01-08T14:00:00+00:00")],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.match_date == date(2026, 1, 8)
+    assert result.match_date != date(2026, 1, 1)  # the tournament start date
+
+
+def test_match_date_is_none_when_fixture_not_found_in_tournament_feed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale/incomplete tournament-level data must degrade to null, not a guess."""
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match()],
+        # The tournament feed doesn't (yet) have this fixture at all.
+        tournament_matches=[],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.match_date is None
+    # Everything else the player-matches endpoint gave us is still reported.
+    assert result.opponent == "Opponent Name"
+    assert result.tournament == "Sample Open"
+
+
+def test_match_date_is_none_when_tournament_endpoint_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient failure enriching the date must never fail the whole match lookup."""
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match()],
+        tournament_matches=None,  # simulates the enrichment call raising
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.match_date is None
+    assert result.opponent == "Opponent Name"
+
+
+def test_match_date_is_none_when_missing_match_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match()],
+        tournament_matches=[_tournament_fixture(match_timestamp=None)],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.match_date is None
+
+
+def test_match_date_is_none_when_fixture_not_yet_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fixture the tournament feed hasn't marked finished must not be trusted."""
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match()],
+        tournament_matches=[_tournament_fixture(match_state="P")],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.match_date is None
+
+
+def test_byes_are_never_selected_as_the_latest_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    bye = _player_match(scores="", opponent_id=None, opponent_name="")
+    bye["opponent"] = None
+    real_match = _player_match(round_name="R32", scores="6-1 6-2", opponent_name="Real Opponent")
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[bye, real_match],
+        tournament_matches=[_tournament_fixture()],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.opponent == "Real Opponent"
+
+
+def test_walkovers_are_never_selected_as_the_latest_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A walkover/default has an opponent listed but no real score - not a played match."""
+
+    walkover = _player_match(scores="", opponent_name="Withdrew Opponent")
+    real_match = _player_match(round_name="R32", scores="7-5 6-3", opponent_name="Real Opponent")
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[walkover, real_match],
+        tournament_matches=[_tournament_fixture()],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.opponent == "Real Opponent"
+
+
+def test_doubles_matches_are_filtered_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    doubles_match = _player_match(s_d_flag="D", opponent_name="Doubles Opponent")
+    singles_match = _player_match(round_name="R32", opponent_name="Singles Opponent")
+
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[doubles_match, singles_match],
+        tournament_matches=[_tournament_fixture()],
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.opponent == "Singles Opponent"
+
+
+def test_no_singles_matches_at_all_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider_with_mocked_client(
+        monkeypatch,
+        player_matches=[_player_match(s_d_flag="D")],
+        tournament_matches=[],
+    )
+
+    assert provider.get_latest_match(PLAYER) is None
+
+
+def test_get_latest_match_raises_player_data_error_on_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outer player-matches call failing is real data loss and must be surfaced
+    (the pipeline catches PlayerDataError per player - see test_pipeline_integration.py)."""
+
+    provider = WtaOfficialMatchProvider()
+
+    def _boom(player_id: str, page_size: int = 25) -> list[dict]:
+        raise RuntimeError("network exploded")
+
+    monkeypatch.setattr(provider._client, "get_player_matches", _boom)
+
+    with pytest.raises(PlayerDataError):
+        provider.get_latest_match(PLAYER)
+
+
+def test_tournament_matches_are_cached_across_players_in_one_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Several Top N players often share a recent tournament; don't refetch it per player."""
+
+    provider = WtaOfficialMatchProvider()
+    call_count = 0
+
+    def _get_player_matches(player_id: str, page_size: int = 25) -> list[dict]:
+        return [_player_match()]
+
+    def _get_tournament_matches(group_id: Any, year: Any, *, page_size: int = 500) -> list[dict]:
+        nonlocal call_count
+        call_count += 1
+        return [_tournament_fixture()]
+
+    monkeypatch.setattr(provider._client, "get_player_matches", _get_player_matches)
+    monkeypatch.setattr(provider._client, "get_tournament_matches", _get_tournament_matches)
+
+    provider.get_latest_match(PLAYER)
+    provider.get_latest_match(
+        PlayerRanking(rank=2, player_id="P3", name="Other", country_code="FRA", points=7000)
+    )
+
+    assert call_count == 1
+
+
+def test_player_2_slot_without_opponent_id_still_reports_match_with_null_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When our player is in the player_2 slot, the API gives us no opponent id, so
+    date enrichment can't run - the rest of the match must still be reported."""
+
+    match = _player_match()
+    match["player_1"] = "SOMEONE_ELSE"
+    match["player_2"] = "P1"
+    match["opponent"] = None  # API only ever populates "opponent" relative to player_1
+    match["team_name_1"] = "Someone Else"
+    match["winner"] = 2  # player_2 (our player) won
+
+    provider = _provider_with_mocked_client(
+        monkeypatch, player_matches=[match], tournament_matches=[_tournament_fixture()]
+    )
+
+    result = provider.get_latest_match(PLAYER)
+
+    assert result is not None
+    assert result.won is True
+    assert result.match_date is None
+    assert result.opponent == "Someone Else"
+
+
+# --- get_matches_for_date (day-first) ----------------------------------------------------
+
+
+def _catalogue_page(
+    *,
+    page: int = 0,
+    total_entries: int = 1,
+    entries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "pageInfo": {"page": page, "numPages": 0, "pageSize": 100, "numEntries": total_entries},
+        "content": entries if entries is not None else [],
+    }
+
+
+def _tournament_catalogue_entry(
+    *,
+    group_id: int = 1017,
+    year: int = 2026,
+    name: str = "CINCINNATI",
+    level: str = "WTA 1000",
+    start_date: str = "2026-08-13",
+    end_date: str = "2026-08-23",
+) -> dict[str, Any]:
+    return {
+        "tournamentGroup": {"id": group_id, "name": name, "level": level},
+        "year": year,
+        "startDate": start_date,
+        "endDate": end_date,
+        "level": level,
+    }
+
+
+def _tournament_level_fixture(
+    *,
+    player_id_a: str = "P1",
+    player_id_b: str = "P2",
+    first_a: str = "Test",
+    last_a: str = "Player",
+    first_b: str = "Opponent",
+    last_b: str = "Name",
+    match_state: str = "F",
+    draw_match_type: str = "S",
+    match_timestamp: str = "2026-08-15T20:23:32.46+00:00",
+    winner: str = "3",
+    round_id: str = "2",
+    draw_level_type: str = "M",
+    score_string: str = "6-3,6-2",
+) -> dict[str, Any]:
+    return {
+        "PlayerIDA": player_id_a,
+        "PlayerIDB": player_id_b,
+        "PlayerNameFirstA": first_a,
+        "PlayerNameLastA": last_a,
+        "PlayerNameFirstB": first_b,
+        "PlayerNameLastB": last_b,
+        "MatchState": match_state,
+        "DrawMatchType": draw_match_type,
+        "MatchTimeStamp": match_timestamp,
+        "Winner": winner,
+        "RoundID": round_id,
+        "DrawLevelType": draw_level_type,
+        "ScoreString": score_string,
+    }
+
+
+def _provider_for_day_first(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    catalogue_entries: list[dict[str, Any]],
+    fixtures_by_tournament: dict[tuple[Any, Any], list[dict[str, Any]]],
+) -> WtaOfficialMatchProvider:
+    provider = WtaOfficialMatchProvider()
+    monkeypatch.setattr(
+        provider._client,
+        "list_tournaments_page",
+        lambda page, page_size=100: (
+            _catalogue_page(page=page, total_entries=len(catalogue_entries), entries=catalogue_entries)
+            if page == 0
+            else _catalogue_page(page=page, entries=[])
+        ),
+    )
+    monkeypatch.setattr(
+        provider._client,
+        "get_tournament_matches",
+        lambda group_id, year, page_size=500: fixtures_by_tournament.get((group_id, year), []),
+    )
+    return provider
+
+
+def test_get_matches_for_date_finds_a_finished_match_on_the_target_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The core day-first regression test: a match the per-player endpoint
+    hasn't ingested yet is still found via the tournament-level scan."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(player_id_a="P1", player_id_b="P2")]
+        },
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert "P1" in results
+    match = results["P1"]
+    assert match.opponent == "Opponent Name"
+    assert match.tournament == "Cincinnati"
+    assert match.match_date == date(2026, 8, 15)
+    assert match.won is False  # Winner="3" means the B slot (opponent) won
+
+
+def test_get_matches_for_date_reports_no_match_for_a_day_nobody_played(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={(1017, 2026): [_tournament_level_fixture()]},
+    )
+
+    # The fixture is dated 2026-08-15; asking about a different day must not
+    # return it - and must not fall back to it either.
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 14))
+
+    assert results == {}
+
+
+def test_get_matches_for_date_never_falls_back_to_an_older_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the exact production complaint: a stale Toronto/
+    Wimbledon-style older match must never stand in for "did she play on
+    this specific day"."""
+
+    older_fixture = _tournament_level_fixture(match_timestamp="2026-06-29T00:00:00+00:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={(1017, 2026): [older_fixture]},
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert "P1" not in results
+
+
+def test_get_matches_for_date_ignores_doubles_and_unfinished_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doubles = _tournament_level_fixture(draw_match_type="D")
+    unfinished = _tournament_level_fixture(match_state="U", winner="")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={(1017, 2026): [doubles, unfinished]},
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results == {}
+
+
+def test_get_matches_for_date_uses_fallback_round_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No per-player entry exists to borrow a nicer round name from, so the
+    plainer DrawLevelType+RoundID label is used - see module docstring."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id="2", draw_level_type="M")]
+        },
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results["P1"].round == "Main Draw Round 2"
+
+
+def test_get_matches_for_date_normalizes_local_offset_timestamps_to_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finished match reported in a local offset (not observed in practice,
+    but the not-yet-played entries in the same feed do this - see module
+    docstring) must still bucket to the correct UTC calendar day."""
+
+    # 23:30 in UTC-04:00 is 03:30 the next day in UTC.
+    fixture = _tournament_level_fixture(match_timestamp="2026-08-15T23:30:00-04:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 16))
+
+    assert "P1" in results
+    assert results["P1"].match_date == date(2026, 8, 16)
+
+
+def test_get_matches_for_date_skips_irrelevant_tour_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ITF/Challenger events never involve Top N players and are skipped
+    without even fetching their match list."""
+
+    fetch_calls: list[tuple[Any, Any]] = []
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(group_id=42, level="ITF")],
+        fixtures_by_tournament={},
+    )
+
+    def _tracking_get_tournament_matches(group_id: Any, year: Any, page_size: int = 500) -> list[dict]:
+        fetch_calls.append((group_id, year))
+        return []
+
+    monkeypatch.setattr(provider._client, "get_tournament_matches", _tracking_get_tournament_matches)
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert results == {}
+    assert fetch_calls == []
+
+
+def test_get_matches_for_date_one_tournament_failing_does_not_block_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = WtaOfficialMatchProvider()
+    monkeypatch.setattr(
+        provider._client,
+        "list_tournaments_page",
+        lambda page, page_size=100: (
+            _catalogue_page(
+                page=page,
+                total_entries=2,
+                entries=[
+                    _tournament_catalogue_entry(group_id=1, name="BROKEN"),
+                    _tournament_catalogue_entry(group_id=2, name="WORKING"),
+                ],
+            )
+            if page == 0
+            else _catalogue_page(page=page, entries=[])
+        ),
+    )
+
+    def _get_tournament_matches(group_id: Any, year: Any, page_size: int = 500) -> list[dict]:
+        if group_id == 1:
+            raise RuntimeError("simulated outage for this one tournament")
+        return [_tournament_level_fixture(player_id_a="P1", player_id_b="P2")]
+
+    monkeypatch.setattr(provider._client, "get_tournament_matches", _get_tournament_matches)
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert "P1" in results  # found via the working tournament despite the broken one
+
+
+def test_get_matches_for_date_raises_when_catalogue_scan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from wta_daily.exceptions import DataProviderError
+
+    provider = WtaOfficialMatchProvider()
+
+    def _boom(page: int, page_size: int = 100) -> dict:
+        raise RuntimeError("simulated catalogue outage")
+
+    monkeypatch.setattr(provider._client, "list_tournaments_page", _boom)
+
+    with pytest.raises(DataProviderError):
+        provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+
+def test_get_matches_for_date_finds_second_player_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Our player can be in either PlayerIDA or PlayerIDB - both must resolve."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                # Our player is in slot B; Winner="3" means slot B won.
+                _tournament_level_fixture(player_id_a="OTHER", player_id_b="P1", winner="3")
+            ]
+        },
+    )
+
+    results = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert "P1" in results
+    assert results["P1"].won is True
+    assert results["P1"].opponent == "Test Player"  # slot A's name, per the fixture helper's defaults

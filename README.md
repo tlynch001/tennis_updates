@@ -47,28 +47,285 @@ Here's what was evaluated:
 
 | Source | Verdict | Notes |
 | --- | --- | --- |
-| **`api.wtatennis.com` (used by this project)** | ✅ Selected | The WTA's own public JSON backend - the same API that powers wtatennis.com. Confirmed live: no API key, no auth header, no `Origin`/`Referer` gate, and `wtatennis.com/robots.txt` returns `Disallow:` (empty) - automated access is not blocked. It's plain JSON over HTTPS, not HTML scraping. |
+| **`api.wtatennis.com` (used by this project)** | ✅ Selected (rankings, and one of two match sources) | The WTA's own public JSON backend - the same API that powers wtatennis.com. Confirmed live: no API key, no auth header, no `Origin`/`Referer` gate, and `wtatennis.com/robots.txt` returns `Disallow:` (empty) - automated access is not blocked. It's plain JSON over HTTPS, not HTML scraping. |
 | Sackmann/Tennis Abstract GitHub data (`tennis_wta`) | ❌ Not used for daily data | Excellent, openly-hosted historical rankings/results, but licensed **CC BY-NC-SA 4.0 (non-commercial only)** and updated on the maintainer's own schedule (not guaranteed same-day), so it doesn't fit an unattended *daily*, potentially monetized YouTube pipeline. |
-| Stats Perform / Sportradar (official WTA data partners) | 🔒 Best long-term paid option | Genuinely official, contractually licensed, real-time. Enterprise sales process and pricing not suited to a hobby/unattended daily job, but this is the recommended upgrade path if the project ever needs contractual guarantees, an SLA, or richer stats (shot-by-shot, etc.). |
-| RapidAPI tennis feeds (e.g. `tennis-api.com`, "Tennis API - ATP WTA ITF") | 🔒 Good paid fallback | Clean REST/JSON, explicit commercial terms, reasonably priced tiers. A solid second choice if `api.wtatennis.com` ever becomes unreliable. |
+| **Stats Perform / Opta** | 🔒 The genuine, exclusive official WTA data partner (contract runs through 2030) | **No self-serve tier at all** - developer-portal registration is disabled; enterprise/contact-sales only, no public pricing (third-party estimates start around €250+/mo). Unrealistic for a hobby/unattended daily job. |
+| **Genius Sports** | 🔒 Official for WTA/Australian Open, via a Stats Perform sub-license | Same access story as Stats Perform - enterprise only, no public pricing. |
+| **Sportradar** | 🔒 Exclusive rights partner for **ATP** (not WTA); its WTA coverage is secondary/aggregated | Has a genuine 30-day/1,000-request self-serve trial, but production pricing reverts to sales (one estimate: "from $1,250/mo"). |
+| **`livetennisapi.com` (used by this project, combined with `wta_official`)** | ✅ Selected as a second match-data source | Independent, **not** WTA-licensed, self-serve, publicly priced ($9.99-$99.99/mo tiers, 14-day-equivalent free tier). Genuine per-match `scheduled_time` + `event_status` (no tournament-date ambiguity), usually fresher than the free feed - but empirically has its own per-player coverage gaps (see below), so it's combined with `wta_official` via `best_of` rather than trusted alone. |
+| **`api-tennis.com` (implemented, not enabled by default)** | ✅ Implemented as an available `best_of` source | Independent, **not** WTA-licensed, self-serve trial. Rankings matched `api.wtatennis.com` exactly; match coverage was *better* than `livetennisapi.com` for at least one player - but ~40% of a live sample showed match dates one calendar day later than the same matches' independently-confirmed dates. See "A second paid source evaluated" below for the full writeup on why this keeps it out of the default source list. |
+| GoalServe, other RapidAPI tennis aggregators (`tennis-api.com`, "Ultimate Tennis", "Tennis Live Data") | 🔒 Good paid fallbacks, not currently wired in | Similar shape to the two above - self-serve, $10-$170/mo range, "real-time" marketing claims not independently verified for all of them. Reasonable alternatives/additions to the `best_of` source list (`wta_daily/plugins/matches/`) if the two implemented paid sources ever become unreliable. |
+| SportsDataIO, Sportmonks, Enet Pulse, BetsAPI/B365api | ❌ Ruled out | SportsDataIO's only self-serve tier explicitly excludes tennis (full tennis access is enterprise-only); Sportmonks has no tennis product at all; Enet Pulse has no public pricing (sales-team engagement required even to trial); BetsAPI repackages bookmaker in-play data (polling-only, no push feed) rather than a league-sanctioned feed. |
+| UTR (Universal Tennis Rating) Engage API | ❌ Ruled out | A *different* ranking system, not the official WTA ranking, and its terms explicitly bar analytics/derivative use of the data. |
 | Scraping `wtatennis.com` HTML pages directly | ❌ Rejected | Unnecessary - the JSON API above is faster, more stable, and was confirmed reachable without scraping any HTML. |
 | ESPN/Sofascore/other unofficial "hidden" APIs | ❌ Rejected | Similar shape to the WTA's own API but with murkier terms of use and no official relationship to the data. No reason to use a third party's undocumented endpoint when the primary source's own undocumented endpoint is available and unrestricted. |
 
+Every independent aggregator's terms reviewed use similar boilerplate: data
+is provided "as is," with no license granted for publication/broadcast -
+narrating factual outcomes (scores, dates, rounds) in a video is generally
+lower-risk than redistributing a raw feed, but none of them affirmatively
+clear "narrate this in a monetized YouTube video." Treat that as a gray
+area to be aware of, same as the free WTA endpoint's own undocumented-API
+caveat below.
+
 **Recommendation, and what's implemented:** use the WTA's own
-`api.wtatennis.com` backend as the default provider
-(`wta_daily/plugins/rankings/wta_official.py` and
-`wta_daily/plugins/matches/wta_official.py`). It is official, free, returns
-structured JSON, and `robots.txt` does not disallow it. The one caveat -
-documented here and in the code - is that the WTA has not published a formal
-developer contract or terms of service for this specific endpoint, so it
-could change or introduce rate limiting without notice. That risk is why
-every provider sits behind the `RankingsProvider`/`MatchProvider` interfaces:
-swapping to a paid, contractually-licensed provider (Stats Perform/Sportradar
-or a RapidAPI tennis feed) later is a matter of adding one new plugin module
-and changing two lines in `config.yaml` - never a rewrite. A fully offline
-`sample` provider (`wta_daily/plugins/rankings/sample.py`,
+`api.wtatennis.com` backend as the rankings provider
+(`wta_daily/plugins/rankings/wta_official.py`) - it is official, free,
+returns structured JSON, and `robots.txt` does not disallow it. For match
+results, use it **combined with** a second, paid, self-serve source
+(`wta_daily/plugins/matches/live_tennis_api.py`, `livetennisapi.com`) via a
+`best_of` composite provider (`wta_daily/plugins/matches/best_of.py`) that
+always keeps whichever source's result has the more recently confirmed
+date - see "Match-data reliability" below for why relying on either source
+alone isn't good enough in practice. The one caveat that still applies to
+`api.wtatennis.com` - documented here and in the code - is that the WTA has
+not published a formal developer contract or terms of service for this
+specific endpoint, so it could change or introduce rate limiting without
+notice. That risk (and the paid source's own coverage gaps) is exactly why
+every provider sits behind the `RankingsProvider`/`MatchProvider`
+interfaces: swapping to, or adding, another paid/contractually-licensed
+provider later is a matter of adding one new plugin module and changing a
+few lines in `config.yaml` - never a rewrite. A fully offline `sample`
+provider (`wta_daily/plugins/rankings/sample.py`,
 `wta_daily/plugins/matches/sample.py`, backed by fixtures in
 `data/sample/`) is also included for development, tests, and demos.
+
+### Match-data reliability (production incident, August 2026)
+
+The first production run exposed two real bugs in `wta_official`'s match
+provider, both now fixed and covered by
+[`tests/test_wta_official_match_provider.py`](tests/test_wta_official_match_provider.py):
+
+1. **Tournament start date reported as the match date.** `GET
+   /players/{id}/matches` returns one `StartDate` (and `tournament.startDate`)
+   value per *tournament*, repeated identically for every round played in
+   it - there is no genuine per-match date anywhere in that response. The
+   fix: for each candidate result, a second call to
+   `GET /tournaments/{groupId}/{year}/matches` (which does carry a real
+   per-fixture `MatchTimeStamp` and a `MatchState`) is used to recover the
+   actual date, matching the fixture by the pair of player IDs. If that
+   lookup can't confirm a date for any reason, `match_date` is `null` -
+   **never** a tournament date. This second endpoint's results are cached
+   per tournament for the life of one pipeline run, since several Top N
+   players are usually in the same recent event.
+2. **Stale player-match history.** That same per-player endpoint can lag
+   real-world results by more than a week during/right after a tournament.
+   Its `sort=desc` ordering of *what it does have* checks out (verified by
+   comparing several players' results against the tournament's own live
+   scores), so it's still used to identify "the most recent result this
+   endpoint knows about" - but there's no cheap way to independently
+   discover "what tournaments are happening right now" from this API (the
+   tournament list endpoint returns its full ~19,000-entry history back to
+   1960 with no working date/status filter) to double check that. Building
+   a speculative live-event scanner was judged out of scope for the
+   reliability this data needs; the honest tradeoff documented in
+   `wta_daily/plugins/matches/wta_official.py` is that this provider's
+   output is always *real and verified*, even if - rarely, in a live
+   event's opening days - it can lag behind the true latest result by a
+   few days until the per-player endpoint catches up.
+
+Both issues were fixed by adding one new official endpoint
+(`WtaOfficialApiClient.get_tournament_matches`) rather than introducing a
+third-party data source - `rankings_provider` is unaffected and still uses
+`wta_official`, per the existing plugin design.
+
+Also fixed: byes, walkovers/defaults, doubles, and not-yet-finished
+fixtures are now explicitly excluded from "latest completed singles match"
+(previously only implicit/accidental ordering luck kept a bye from ever
+being picked).
+
+### Combining a paid source with the free one (`best_of`)
+
+The remaining limitation above - `wta_official` can lag real-world results
+by over a week during a live event - motivated researching paid/commercial
+tennis data APIs (see the provider comparison table above; short version:
+the actually-official, exclusive WTA data partner is Stats Perform, and
+it's enterprise-sales-only with no public pricing, so every self-serve
+option is an independent, unlicensed-by-the-WTA aggregator).
+
+[`livetennisapi.com`](https://livetennisapi.com) was selected to try: a
+small, self-serve, transparently-priced aggregator ($9.99-$99.99/mo tiers)
+whose completed-match records carry a genuine per-match `scheduled_time`
+and an explicit `event_status` for retirements/walkovers/cancellations - no
+tournament-date ambiguity to begin with. `wta_daily/plugins/matches/live_tennis_api.py`
+implements the same `MatchProvider` interface against it. Player identity
+isn't shared between the two APIs, so each player is resolved by name via
+`GET /players?search=`, filtering out doubles teams and unranked namesake
+noise entries (see `_pick_best_player_match`).
+
+**Verified live against the real August 2026 Top 10, this paid source is
+not reliable alone either**: 9 of 10 players' results exactly matched
+`wta_official`'s independently-verified dates, but one player's record in
+this vendor's system simply stopped four months earlier than the others' -
+missing a Wimbledon final and a Toronto result, with no error or warning
+to signal the gap. Vendor "real-time"/"accurate" marketing claims in this
+space should not be taken as an SLA (see the commercial-options research
+in the table above for the same caveat about several other vendors).
+
+Rather than swap one imperfect source for another, `wta_daily/plugins/matches/best_of.py`
+implements a `MatchProvider` that queries every configured source for a
+player, isolates failures per source (one source erroring - or hitting its
+free-tier rate limit, as happened live during testing - never blocks
+another from being tried), and keeps whichever successful result has the
+most recently *confirmed* `match_date`. This is the config example's
+default (`match_provider.provider: best_of`, combining `wta_official` +
+`live_tennis_api`) precisely because both underlying providers now recover
+a genuine, verified per-match date - so "which result is actually more
+recent" is an objective comparison, not a guess. Covered by
+[`tests/test_best_of_match_provider.py`](tests/test_best_of_match_provider.py)
+and [`tests/test_live_tennis_api_match_provider.py`](tests/test_live_tennis_api_match_provider.py)
+(including a regression test for the exact stale-namesake-record case
+above). `live_tennis_api`'s API key is resolved from the `LIVETENNISAPI_KEY`
+environment variable (`api_key_env` in config) - never hardcoded; see
+`.env.example`. To skip the paid source entirely, set
+`match_provider: {provider: wta_official}` in `config.yaml`.
+
+### A second paid source evaluated (`api_tennis`) - implemented, not enabled by default
+
+[`api-tennis.com`](https://api-tennis.com) was tried as a third source
+(`wta_daily/plugins/matches/api_tennis.py`), using a temporary trial key,
+specifically to compare against the two sources above. Its shape is
+different from `livetennisapi.com` - one endpoint with a `method=` query
+parameter and the key passed as `APIkey=` rather than an `Authorization`
+header - and player resolution is a direct name lookup against its
+`get_standings` response (which conveniently returns every ranked player's
+exact name *and* internal id in one call) rather than a fuzzy search.
+
+**Live comparison against the same current WTA Top 10:**
+
+- **Rankings matched `api.wtatennis.com` exactly** - same order, same point
+  totals, for all 10 players.
+- **Match coverage was better than `live_tennis_api`** for the one player
+  who had a real multi-month gap there: `api_tennis` had her complete
+  history through the correct Wimbledon final date.
+- **A real, minor date-accuracy issue**: 4 of the 10 players' latest
+  results came back exactly one calendar day *later* than the same
+  matches' dates independently confirmed by both other sources (a
+  plausible timezone-rollover artifact in how this vendor buckets match
+  dates - opponent, score, and round were all still correct). This wasn't
+  found in `wta_official`/`live_tennis_api`'s agreement with each other.
+- One more vendor-specific quirk worth knowing: this API encodes some
+  tiebreak set scores unconventionally (e.g. a 7-6(3) set can appear as
+  `score_first: "6.3"`); rather than guess at reverse-engineering it, this
+  provider passes those strings through as-is.
+
+**Why it's implemented but not in `best_of`'s default source list**:
+`best_of` picks whichever source's date is most recent, so adding a source
+with an occasional one-day-*late* drift means it can outrank a same-event,
+more-accurate date from another source - exactly the 4-player pattern
+above would reproduce if all three sources were combined. This is a
+real, measured tradeoff, not a hypothetical one: enable it deliberately
+(see `config.example.yaml`) if you want the extra redundancy and are fine
+with that risk, e.g. as a `live_tennis_api` replacement if you don't have
+a key for that service. Covered by
+[`tests/test_api_tennis_match_provider.py`](tests/test_api_tennis_match_provider.py).
+Its API key is resolved from `APITENNIS_KEY` (`api_key_env` in config) -
+never hardcoded. (Note: `get_matches_for_date`, described next, only
+accepts a source's result when its date matches the target day exactly, so
+this drift now mostly makes `api_tennis` silently miss a match rather than
+report a wrong one - safer than it would have been before, but still not
+a reason to default to it.)
+
+### From "her latest match" to "did she play yesterday" (day-first matching)
+
+A second production run exposed a deeper problem than the tournament-date
+bug above: even with a correct date, `wta_official`'s per-player history
+endpoint (`GET /players/{id}/matches`) can lag the *current* tournament
+week by several days. Confirmed live: three Top 10 players had already won
+a second-round match at that week's tournament while this endpoint still
+showed nothing past the *previous* week's event for any of them - so asking
+"what's her latest match" answered with a real, correctly-dated, but
+substantively **stale** result once the report is meant to be about a
+specific day (e.g. "yesterday").
+
+Investigated and ruled out as a fix for this specific problem: the official
+[`developers.wtatennis.com`](https://developers.wtatennis.com) portal
+(JS app behind a login wall requiring Microsoft SSO or a pre-issued
+"Subscription ID" - no public signup found, not pursued further per "don't
+bypass access controls"). What *did* solve it: the WTA's own live-scores
+page turns out to be built on the exact same `api.wtatennis.com` backend
+already in use here - confirmed directly from the site's own frontend
+config (`"api": "https://api.wtatennis.com"`) - just read through a
+different, near-real-time endpoint (the tournament-level one, already used
+above for date recovery) instead of the slow per-player one.
+
+**The fix: flip the query direction.** Instead of *"for each Top N player,
+what's her latest match"* (player-first), the pipeline now asks *"which
+matches finished on this exact date, and which of them involve a Top N
+player"* (day-first):
+
+1. `MatchProvider.get_matches_for_date(players, target_date)` is the new
+   primary interface method (see `wta_daily/plugins/base.py`) -
+   `get_latest_match` still exists (some providers/tests still use it, and
+   it has a real, different meaning - "whatever this provider's most recent
+   *known* result is, regardless of date"), but the pipeline no longer calls
+   it directly.
+2. `WtaOfficialMatchProvider.get_matches_for_date` scans the tournament
+   catalogue for events active on the target date (there's no working
+   date filter on that endpoint, so this pages through the *last* ~25
+   pages of the ~19,000-entry, roughly-chronological catalogue - the
+   current season is always near the end, and this is a few seconds of
+   work once per run, not per player), fetches each active tournament's
+   full match list, and keeps only genuinely finished (`MatchState: "F"`)
+   singles matches whose real per-fixture timestamp falls on that exact
+   UTC calendar day. A player absent from the result gets `played: false`
+   - **nothing ever falls back to an older match.**
+3. `MatchProvider`'s default `get_matches_for_date` (used by `sample`,
+   `live_tennis_api`, `api_tennis`, which don't have a day-indexed lookup
+   of their own) falls back to `get_latest_match` per player, keeping the
+   result only if its date exactly equals the target date - honest (never
+   claims a wrong date), but can under-report a match that source's
+   per-player history hasn't caught up on yet. Only `wta_official`'s
+   override actually fixes the staleness; the others just avoid making it
+   worse.
+4. `BestOfMatchProvider.get_matches_for_date` tries every source in turn,
+   removing a player from consideration as soon as any source confirms a
+   match for them, and only raises if **every** source fails outright -
+   a player confidently absent from a source that itself completed without
+   error is reported as `played: false`, not as an error. This same
+   per-source isolation now also covers **construction**, not just lookups:
+   if a configured source can't even be built (e.g. a paid source's API key
+   hasn't been set yet), that source is skipped with a logged warning
+   instead of crashing the whole run, as long as at least one other
+   configured source is usable - `ConfigurationError` is raised only if
+   every configured source fails to construct. This is what lets the
+   default config ship with both `wta_official` and `live_tennis_api`
+   listed, even though only the free one is guaranteed to work out of the
+   box.
+5. `report.json` gained a top-level `match_target_date` field (the actual
+   UTC date being asked about - `report_date` minus
+   `match_target_date_offset_days`, default 1 = yesterday) so every
+   consumer (narration, graphics, and anyone reading the file later) knows
+   exactly what date `played`/`match` answer for.
+
+**Verified against a real historical date (August 14, 2026) with zero
+discrepancies against three independent sources** (BBC Sport, and two
+tennis-news outlets, cross-checked against the WTA's own scores page): on
+that date, none of the (then-)current Top 10 had played yet (seeded players
+get a first-round bye in a 96-draw event and start in Round 2) - the
+day-first lookup correctly reported `played: false` for all ten, and
+separately, correctly found three players' real wins the very next day,
+matching those same sources exactly (opponent, score, round, and date).
+
+One remaining, explicitly accepted tradeoff: a match found only through the
+day-first tournament scan (i.e. one the per-player endpoint hasn't caught
+up on yet) can't be cross-referenced against that endpoint's nicer
+`R16`/`Quarterfinal`-style round names, since there's nothing to
+cross-reference. Those matches get a plainer `"Main Draw Round 2"`-style
+label instead, built directly from the tournament feed's own fields -
+correct, just less polished until the per-player endpoint does catch up.
+Opponent, score, date, and win/loss are unaffected.
+
+**Timezone handling**: `MatchTimeStamp` is UTC (`+00:00`/`Z`) for finished
+matches, but the *same field* on not-yet-played fixtures in the same
+response can be in tournament **local** time with an explicit offset (e.g.
+`-04:00` for Cincinnati) - a genuine inconsistency in this API, and a
+plausible explanation for `api_tennis`'s date drift above. `_parse_timestamp`
+(`wta_daily/plugins/matches/wta_official.py`) always normalizes to UTC
+before taking the calendar date, and "yesterday" is defined project-wide as
+**UTC calendar yesterday relative to when the job runs** - deterministic
+and reproducible regardless of which tournament's timezone a match was
+actually played in.
 
 ## Player imagery: legal approach
 
@@ -165,6 +422,9 @@ Everything tunable lives in one YAML file - see the fully-commented
 `config/config.yaml` (git-ignored) before running. Highlights:
 
 - `top_n` - how many players to track (10 by default; flip to 25 any time).
+- `match_target_date_offset_days` - which day counts as "the day we're
+  reporting match results for" (1 = yesterday, UTC; see "From 'her latest
+  match' to 'did she play yesterday'" above).
 - `rankings_provider` / `match_provider` - `{provider: <name>, ...options}`;
   `<name>` is looked up in the plugin registry (see below).
 - `script.generator` - `template` (default, offline, free) or `openai`
@@ -215,8 +475,8 @@ CLI (wta_daily/cli.py)
   -> load_config()                     wta_daily/config.py
   -> DailyPipeline.run()                wta_daily/pipeline.py
        1. RankingsProvider.get_top_n()          <- plugin: rankings_registry
-       2. compute_movement() vs snapshot store  wta_daily/movement.py
-       3. MatchProvider.get_latest_match() x N  <- plugin: matches_registry  (per-player try/except)
+       2. compute_movement() vs snapshot store  wta_daily/movement.py (UNKNOWN if no prior snapshot exists at all)
+       3. MatchProvider.get_matches_for_date()   <- plugin: matches_registry  (day-first batch call; a player absent from the result is played: false, never an older match)
        4. RankingsSnapshotStore.save_snapshot() wta_daily/persistence/snapshot_store.py
        5. DailyOutputStore.write_report()       wta_daily/persistence/report_store.py
        6. ScriptGenerator.generate()            <- plugin: script_registry
@@ -260,6 +520,14 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
   already stores a `tour` field per snapshot so ATP and WTA history can
   coexist.
 - **Top 25 instead of Top 10**: change `top_n: 25` in config. Nothing else.
+- **Combine several data sources for one concern**: plugins can compose
+  other plugins purely through the registry - `wta_daily/plugins/matches/best_of.py`
+  is a real example: it's itself a `MatchProvider` that constructs and
+  queries several other registered `MatchProvider`s (`wta_official` +
+  `live_tennis_api` by default) and picks the best result, with no special
+  casing anywhere else in the pipeline. The same pattern works for any
+  plugin category - e.g. a `best_of` `RankingsProvider` that cross-checks
+  two ranking sources would look identical in shape.
 - **Daily single-player tracker** (e.g. "Emma Navarro tracker"): a thin
   wrapper pipeline (or a config with `top_n: 1` plus a custom rankings
   provider that filters to one player) reusing every other module unchanged.
@@ -276,11 +544,22 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 
 ## Error handling & logging
 
-- **One player's failure never aborts the run.** `DailyPipeline._safe_get_latest_match`
-  catches any exception from the match provider per player, records it on
-  that player's `match_error` field (visible in `report.json`), appends it to
-  the report's `errors` list, logs it, and moves on to the next player. This
-  is covered by `tests/test_pipeline_integration.py::test_pipeline_continues_when_one_players_match_fails`.
+- **One player's failure never aborts the run.** `MatchProvider`'s default
+  `get_matches_for_date` (used by any source without a native day-indexed
+  lookup) isolates each player's `get_latest_match` call in its own
+  try/except; a player whose lookup fails simply doesn't appear in that
+  source's result (same as if she hadn't played - see "From 'her latest
+  match' to 'did she play yesterday'" above for why that's the honest
+  outcome for a per-item failure with no separate "unknown" channel to put
+  it in). `BestOfMatchProvider` isolates failures per *source* the same way.
+  Covered by `tests/test_match_provider_base.py` and
+  `tests/test_pipeline_integration.py::test_pipeline_continues_when_one_players_match_fails`.
+- **A total match-lookup failure (every source down, or the sole configured
+  one failing outright) is different and *is* flagged**: every player is
+  reported as `played: false` *with* a `match_error` message attached, so
+  `report.json` can distinguish "we confirmed she didn't play" from "we
+  couldn't check." Covered by
+  `tests/test_pipeline_integration.py::test_pipeline_marks_every_player_with_match_error_on_total_batch_failure`.
 - **Rankings failing is fatal for that run** (there is nothing to report
   without them) - `DataProviderError` propagates out of `DailyPipeline.run()`
   and the CLI logs it clearly and exits non-zero, rather than writing a
@@ -291,6 +570,12 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 - HTTP calls (`wta_daily/http_client.py`) retry transient failures with
   exponential backoff before giving up, configurable via `network:` in
   `config.yaml`.
+- **Match-date enrichment failing never drops the whole match.** If the
+  tournament-level lookup used to recover a real match date (see "Match-data
+  reliability" above) can't confirm one - network hiccup, fixture not found,
+  endpoint shape change - `WtaOfficialMatchProvider` logs it and returns the
+  match anyway with `match_date: null`; it never raises, and it never
+  substitutes a tournament date as a "good enough" guess.
 
 ## Scheduling
 
@@ -418,13 +703,31 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-50 unit/integration tests cover models, movement math, country/flag
-resolution, config loading, the plugin registry, snapshot persistence, the
-sample providers, the template script generator (including the "mention
-movement only when it changed" and "no verbatim-identical script two days in
-a row" behaviors), graphics rendering, and a full end-to-end pipeline run
+Over 138 unit/integration tests cover models (including `DailyReport.match_target_date`
+round-tripping), movement math (including the "unknown" vs "new"
+distinction), country/flag resolution, config loading, the plugin registry,
+snapshot persistence, the sample providers, `MatchProvider`'s default
+day-first fallback in isolation (`tests/test_match_provider_base.py`), the
+`wta_official` match provider's date-recovery, day-first tournament scan
+(including the "never falls back to an older match", timezone-normalization,
+and irrelevant-tour-level-skipping behaviors), and bye/walkover/doubles
+filtering logic (mocked HTTP - see
+`tests/test_wta_official_match_provider.py`), the `live_tennis_api` and
+`api_tennis` match providers' name-resolution and event-status filtering
+logic (mocked HTTP - `tests/test_live_tennis_api_match_provider.py`,
+`tests/test_api_tennis_match_provider.py`), the `best_of` composite
+provider's source-combination logic for both `get_latest_match` ("prefer the
+more recently confirmed date") and `get_matches_for_date` ("first source to
+confirm a player wins; only raise if every source fails outright")
+(`tests/test_best_of_match_provider.py`, including a regression test for the
+real stale-namesake-record incident described above), the template script
+generator (including the "mention movement
+only when it changed", "never say a baseline run's players are new", "the
+sign-off is always last" and "no verbatim-identical script two days in a
+row" behaviors), graphics rendering, and a full end-to-end pipeline run
 (including the per-player-failure-isolation scenario) - all using the
-offline `sample` providers, so `pytest` never makes a network call.
+offline `sample` providers or mocked HTTP responses, so `pytest` never
+makes a real network call.
 
 ```bash
 pytest              # unit + integration tests

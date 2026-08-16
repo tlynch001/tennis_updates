@@ -76,3 +76,56 @@ def test_render_player_card_handles_no_match(tmp_path: Path) -> None:
     render_player_card(player, output_path, config, top_n=10)
 
     assert output_path.exists()
+
+
+def test_render_player_card_handles_match_with_unconfirmed_date(tmp_path: Path) -> None:
+    """A match can be fully known except for its date - graphics must not crash
+    or fabricate a date, per the "null is better than wrong" rule."""
+
+    config = GraphicsConfig(width=640, height=360)
+    match = MatchResult(
+        opponent="Some Opponent",
+        tournament="Some Open",
+        round="Final",
+        score="6-4 6-4",
+        won=True,
+        match_date=None,
+    )
+    player = PlayerReport(
+        rank=1,
+        name="Unconfirmed Date Player",
+        player_id="p1",
+        country_code="USA",
+        points=1000,
+        movement=Movement.SAME,
+        previous_rank=1,
+        match=match,
+    )
+    output_path = tmp_path / "card.png"
+
+    render_player_card(player, output_path, config, top_n=10)
+
+    assert output_path.exists()
+    with Image.open(output_path) as img:
+        assert img.size == (640, 360)
+
+
+def test_render_player_card_handles_unknown_movement(tmp_path: Path) -> None:
+    """No previous snapshot at all - graphics must render neutrally, not as 'NEW'."""
+
+    config = GraphicsConfig(width=640, height=360)
+    player = PlayerReport(
+        rank=4,
+        name="Baseline Player",
+        player_id="p4",
+        country_code="USA",
+        points=1000,
+        movement=Movement.UNKNOWN,
+        previous_rank=None,
+        match=None,
+    )
+    output_path = tmp_path / "card.png"
+
+    render_player_card(player, output_path, config, top_n=10)
+
+    assert output_path.exists()
