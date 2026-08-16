@@ -23,7 +23,13 @@ from wta_daily.exceptions import (
     VoiceSynthesisError,
 )
 from wta_daily.git_automation import GitAutomationError, commit_and_push
-from wta_daily.models import DailyReport, MatchResult, PlayerRanking, PlayerReport
+from wta_daily.models import (
+    DailyReport,
+    FeaturedPlayerReport,
+    MatchResult,
+    PlayerRanking,
+    PlayerReport,
+)
 from wta_daily.movement import compute_movement, previous_ranks_by_player
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.persistence.snapshot_store import RankingsSnapshotStore
@@ -135,9 +141,22 @@ class DailyPipeline:
         else:
             logger.info("Comparing against snapshot from %s.", previous[0].isoformat())
 
+        # Resolve the featured player's current ranking (if configured)
+        # before the match batch call, so she can ride along in that same
+        # request instead of triggering one of her own - see
+        # _safe_resolve_featured_player_ranking's docstring.
+        featured_ranking: PlayerRanking | None = None
+        featured_rank_error: str | None = None
+        if self._config.featured_player.enabled:
+            featured_ranking, featured_rank_error = self._safe_resolve_featured_player_ranking(pool)
+
         match_target_date = report_date - timedelta(days=self._config.match_target_date_offset_days)
         logger.info("Downloading matches completed on %s...", match_target_date.isoformat())
-        matches_by_player, batch_error = self._safe_get_matches_for_date(rankings, match_target_date)
+        match_batch = list(rankings)
+        tracked_ids = {r.player_id for r in rankings}
+        if featured_ranking is not None and featured_ranking.player_id not in tracked_ids:
+            match_batch.append(featured_ranking)
+        matches_by_player, batch_error = self._safe_get_matches_for_date(match_batch, match_target_date)
         if batch_error:
             logger.warning(
                 "Could not confirm match data for %s - every player below will show "
@@ -171,19 +190,43 @@ class DailyPipeline:
                 )
             )
 
+        featured_player_report: FeaturedPlayerReport | None = None
+        if self._config.featured_player.enabled:
+            featured_player_report, featured_build_error = self._safe_build_featured_player_report(
+                featured_ranking,
+                featured_rank_error,
+                matches_by_player,
+                batch_error,
+                report_date,
+                has_previous_snapshot,
+            )
+            if featured_build_error:
+                errors.append(featured_build_error)
+
         # Movement history stays scoped to exactly the tracked group (see
         # RankingsSnapshotStore.save_snapshot's docstring for why widening
-        # this would silently break "NEW" semantics); the wider pool's
-        # names/countries are still cached (safe, non-time-sensitive) for
-        # future use, at no extra API cost since it's the same response.
-        self._snapshot_store.save_snapshot(report_date, self._config.tour, rankings)
-        self._snapshot_store.update_players_cache(pool)
+        # this would silently break "NEW" semantics); the featured player's
+        # rank (if she isn't already in that group) is recorded separately
+        # so her own movement can still be computed on future runs. The
+        # wider pool's names/countries are cached either way, at no extra
+        # API cost since it's the same response already fetched above.
+        featured_players_to_save = (
+            {featured_ranking.player_id: featured_ranking} if featured_ranking is not None else None
+        )
+        self._snapshot_store.save_snapshot(
+            report_date, self._config.tour, rankings, featured_players=featured_players_to_save
+        )
+        cache_pool = list(pool)
+        if featured_ranking is not None and featured_ranking.player_id not in {r.player_id for r in pool}:
+            cache_pool.append(featured_ranking)
+        self._snapshot_store.update_players_cache(cache_pool)
         return DailyReport(
             report_date=report_date,
             tour=self._config.tour,
             players=players,
             errors=errors,
             match_target_date=match_target_date,
+            featured_player=featured_player_report,
         )
 
     def _safe_get_matches_for_date(
@@ -226,6 +269,118 @@ class DailyPipeline:
                 "them" if len(unresolved_names) != 1 else "her",
             )
         return result.matches, None
+
+    def _safe_resolve_featured_player_ranking(
+        self, pool: list[PlayerRanking]
+    ) -> tuple[PlayerRanking | None, str | None]:
+        """Find the configured featured player's current ranking, never
+        letting a failure here affect the Top N report.
+
+        Looks in the rankings pool already fetched for this run first (the
+        common case - free, since it's the exact same response). Only if
+        she isn't in it does this fall back to one additional
+        :meth:`RankingsProvider.get_top_n` call for a larger page -
+        reusing the same provider interface rather than adding a
+        dedicated "look up one player" endpoint - since her real rank
+        could be well outside the configured pool size.
+        """
+
+        fp_config = self._config.featured_player
+        for ranking in pool:
+            if ranking.player_id == fp_config.player_id:
+                return ranking, None
+
+        fallback_n = max(len(pool) * 4, 100)
+        logger.info(
+            "Featured player %s (id=%s) was not in the top %d; requesting a "
+            "larger rankings page (top %d) to locate her.",
+            fp_config.name,
+            fp_config.player_id,
+            len(pool),
+            fallback_n,
+        )
+        try:
+            larger_pool = self._rankings_provider.get_top_n(fallback_n)
+        except Exception as exc:  # noqa: BLE001 - must never affect the Top N report
+            logger.warning(
+                "Could not resolve featured player %s's ranking this run: %s", fp_config.name, exc
+            )
+            return None, f"Could not resolve {fp_config.name}'s ranking: {exc}"
+
+        for ranking in larger_pool:
+            if ranking.player_id == fp_config.player_id:
+                return ranking, None
+
+        logger.info(
+            "Featured player %s (id=%s) was not found in the top %d WTA rankings this run.",
+            fp_config.name,
+            fp_config.player_id,
+            fallback_n,
+        )
+        return None, (
+            f"{fp_config.name} was not found in the top {fallback_n} WTA rankings this run."
+        )
+
+    def _safe_build_featured_player_report(
+        self,
+        ranking: PlayerRanking | None,
+        rank_error: str | None,
+        matches_by_player: dict[str, MatchResult],
+        batch_error: str | None,
+        report_date: date,
+        has_previous_snapshot: bool,
+    ) -> tuple[FeaturedPlayerReport, str | None]:
+        """Build the featured-player section of the report, isolating any
+        unexpected failure so it can never break the rest of the pipeline -
+        see the module docstring's "never cause the normal Top N pipeline
+        to fail" requirement.
+        """
+
+        fp_config = self._config.featured_player
+        try:
+            if ranking is None:
+                return (
+                    FeaturedPlayerReport(
+                        name=fp_config.name,
+                        player_id=fp_config.player_id,
+                        tagline=fp_config.tagline,
+                        rank_error=rank_error,
+                    ),
+                    rank_error,
+                )
+
+            previous_rank = self._snapshot_store.get_previous_player_rank(
+                report_date, self._config.tour, ranking.player_id
+            )
+            movement = compute_movement(
+                ranking.rank, previous_rank, has_previous_snapshot=has_previous_snapshot
+            )
+            return (
+                FeaturedPlayerReport(
+                    name=ranking.name,
+                    player_id=ranking.player_id,
+                    tagline=fp_config.tagline,
+                    country_code=ranking.country_code,
+                    rank=ranking.rank,
+                    points=ranking.points,
+                    movement=movement,
+                    previous_rank=previous_rank,
+                    match=matches_by_player.get(ranking.player_id),
+                    match_error=batch_error,
+                ),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the featured segment must never break the run
+            logger.exception("Unexpected error building the featured-player report for %s", fp_config.name)
+            return (
+                FeaturedPlayerReport(
+                    name=fp_config.name,
+                    player_id=fp_config.player_id,
+                    tagline=fp_config.tagline,
+                    rank_error=f"Unexpected error building featured-player report: {exc}",
+                ),
+                f"Unexpected error building featured-player report for {fp_config.name}: {exc}",
+            )
 
     def _render_graphics(self, report: DailyReport, store: DailyOutputStore) -> None:
         try:

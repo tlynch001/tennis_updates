@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from wta_daily.config import AppConfig, GraphicsConfig, ProviderConfig
-from wta_daily.models import MatchResult, PlayerRanking
+from wta_daily.config import AppConfig, FeaturedPlayerConfig, GraphicsConfig, ProviderConfig
+from wta_daily.models import MatchLookupResult, MatchResult, Movement, PlayerRanking
 from wta_daily.pipeline import DailyPipeline
-from wta_daily.plugins.base import MatchProvider
+from wta_daily.plugins.base import MatchProvider, RankingsProvider
 from wta_daily.plugins.matches.sample import SampleMatchProvider  # noqa: F401 - registers plugin
 from wta_daily.plugins.rankings.sample import SampleRankingsProvider
 from wta_daily.plugins.registry import matches_registry, rankings_registry
@@ -249,3 +249,342 @@ def test_pipeline_marks_every_player_with_match_error_on_total_batch_failure(
     assert all(p.match_error is not None for p in report.players)
     assert len(report.errors) == 1
     assert (config.output_dir / "2026-08-09" / "report.json").exists()
+
+
+# --- Featured player (Emma Navarro / "america_favorite") --------------------
+
+EMMA_ID = "emma-test-id"
+EMMA_NAME = "Emma Navarro"
+
+
+def _synthetic_rankings(emma_rank: int | None, total: int = 30) -> list[PlayerRanking]:
+    """A full 1..total rankings list with Emma at `emma_rank` (or omitted
+    entirely if `emma_rank` is None, e.g. to simulate her dropping out of
+    the rankings altogether) and everyone else auto-generated."""
+
+    rankings = []
+    for rank in range(1, total + 1):
+        if rank == emma_rank:
+            rankings.append(
+                PlayerRanking(
+                    rank=rank,
+                    player_id=EMMA_ID,
+                    name=EMMA_NAME,
+                    country_code="USA",
+                    points=10_000 - rank * 10,
+                )
+            )
+        else:
+            rankings.append(
+                PlayerRanking(
+                    rank=rank,
+                    player_id=f"synthetic-{rank}",
+                    name=f"Synthetic Player {rank}",
+                    country_code="USA",
+                    points=10_000 - rank * 10,
+                )
+            )
+    return rankings
+
+
+class _SyntheticRankingsProvider(RankingsProvider):
+    """Directly controllable rankings source for featured-player scenarios -
+    bypasses the plugin registry/config-options plumbing entirely, since
+    these tests need precise control over exactly who is ranked where."""
+
+    def __init__(self, rankings: list[PlayerRanking]) -> None:
+        self._rankings = rankings
+        self.calls: list[int] = []
+
+    def get_top_n(self, n: int) -> list[PlayerRanking]:
+        self.calls.append(n)
+        return sorted(self._rankings, key=lambda r: r.rank)[:n]
+
+
+class _SyntheticMatchProvider(MatchProvider):
+    """Directly controllable match source: returns exactly the
+    matches/unresolved players configured, regardless of who's actually
+    asked about - lets tests assert on precisely how a batch call gets
+    interpreted without needing real tournament-scan mocking."""
+
+    def __init__(
+        self,
+        matches: dict[str, MatchResult] | None = None,
+        unresolved: set[str] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._matches = matches or {}
+        self._unresolved = frozenset(unresolved or ())
+        self._error = error
+        self.requested_player_ids: list[str] = []
+
+    def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+        raise AssertionError("not used - get_matches_for_date is overridden")
+
+    def get_matches_for_date(self, players, target_date):  # noqa: ANN001, ANN201
+        self.requested_player_ids = [p.player_id for p in players]
+        if self._error is not None:
+            raise self._error
+        requested = {p.player_id for p in players}
+        matches = {pid: m for pid, m in self._matches.items() if pid in requested}
+        unresolved = self._unresolved & requested
+        return MatchLookupResult(matches=matches, unresolved_player_ids=unresolved)
+
+
+def _emma_match(*, won: bool) -> MatchResult:
+    return MatchResult(
+        opponent="Some Opponent",
+        tournament="Cincinnati",
+        round="Round of 32",
+        score="6-4 6-3",
+        won=won,
+        match_date=date(2026, 8, 8),  # equals report_date (8/9) minus the default 1-day offset
+    )
+
+
+def _make_featured_config(tmp_path: Path, *, top_n: int = 10) -> AppConfig:
+    config = _make_config(tmp_path)
+    config.top_n = top_n
+    config.featured_player = FeaturedPlayerConfig(
+        enabled=True, player_id=EMMA_ID, name=EMMA_NAME, tagline="america_favorite"
+    )
+    return config
+
+
+def _run_with_featured_player(
+    tmp_path: Path,
+    *,
+    emma_rank: int | None,
+    top_n: int = 10,
+    matches: dict[str, MatchResult] | None = None,
+    unresolved: set[str] | None = None,
+    match_error: Exception | None = None,
+    rankings_provider: RankingsProvider | None = None,
+    report_date: date = date(2026, 8, 9),
+):
+    config = _make_featured_config(tmp_path, top_n=top_n)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = rankings_provider or _SyntheticRankingsProvider(
+        _synthetic_rankings(emma_rank)
+    )
+    pipeline._match_provider = _SyntheticMatchProvider(
+        matches=matches, unresolved=unresolved, error=match_error
+    )
+    return pipeline, pipeline.run(report_date)
+
+
+def test_featured_player_outside_top_n(tmp_path: Path) -> None:
+    _, report = _run_with_featured_player(tmp_path, emma_rank=28)
+
+    assert report.featured_player is not None
+    assert report.featured_player.name == EMMA_NAME
+    assert report.featured_player.rank == 28
+    assert report.featured_player.rank_error is None
+    # She isn't actually in the Top 10 - the official list must stay factual.
+    assert all(p.player_id != EMMA_ID for p in report.players)
+
+
+def test_featured_player_movement_toward_top_n(tmp_path: Path) -> None:
+    pipeline, _ = _run_with_featured_player(tmp_path, emma_rank=30, report_date=date(2026, 8, 8))
+    # Second run: she's climbed from 30 to 22.
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(22))
+    pipeline._match_provider = _SyntheticMatchProvider()
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert report.featured_player is not None
+    assert report.featured_player.rank == 22
+    assert report.featured_player.previous_rank == 30
+    assert report.featured_player.movement == Movement.UP
+
+
+def test_featured_player_holding_steady(tmp_path: Path) -> None:
+    pipeline, _ = _run_with_featured_player(tmp_path, emma_rank=28, report_date=date(2026, 8, 8))
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider()
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert report.featured_player is not None
+    assert report.featured_player.movement == Movement.SAME
+    assert report.featured_player.rank == report.featured_player.previous_rank == 28
+
+
+def test_featured_player_movement_downward(tmp_path: Path) -> None:
+    pipeline, _ = _run_with_featured_player(tmp_path, emma_rank=20, report_date=date(2026, 8, 8))
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider()
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert report.featured_player is not None
+    assert report.featured_player.rank == 28
+    assert report.featured_player.previous_rank == 20
+    assert report.featured_player.movement == Movement.DOWN
+
+
+def test_featured_player_winning_on_match_target_date(tmp_path: Path) -> None:
+    win = _emma_match(won=True)
+    _, report = _run_with_featured_player(tmp_path, emma_rank=28, matches={EMMA_ID: win})
+
+    assert report.featured_player is not None
+    assert report.featured_player.match == win
+    assert report.featured_player.won is True
+    assert report.featured_player.played is True
+
+
+def test_featured_player_losing_on_match_target_date(tmp_path: Path) -> None:
+    loss = _emma_match(won=False)
+    _, report = _run_with_featured_player(tmp_path, emma_rank=28, matches={EMMA_ID: loss})
+
+    assert report.featured_player is not None
+    assert report.featured_player.match == loss
+    assert report.featured_player.won is False
+    assert report.featured_player.played is True
+
+
+def test_featured_player_did_not_play(tmp_path: Path) -> None:
+    _, report = _run_with_featured_player(tmp_path, emma_rank=28, matches={})
+
+    assert report.featured_player is not None
+    assert report.featured_player.match is None
+    assert report.featured_player.played is False
+    assert report.featured_player.won is None
+    assert report.featured_player.rank == 28
+
+
+def test_featured_player_match_data_unavailable_does_not_fabricate(tmp_path: Path) -> None:
+    """Her own match-source lookup being unresolved (while her rank is
+    perfectly fine) must still leave `match` as None - never a guess."""
+
+    _, report = _run_with_featured_player(tmp_path, emma_rank=28, unresolved={EMMA_ID})
+
+    assert report.featured_player is not None
+    assert report.featured_player.rank == 28
+    assert report.featured_player.match is None
+    assert report.featured_player.won is None
+
+
+def test_featured_player_total_match_batch_failure_sets_match_error(tmp_path: Path) -> None:
+    _, report = _run_with_featured_player(
+        tmp_path, emma_rank=28, match_error=RuntimeError("simulated total outage")
+    )
+
+    assert report.featured_player is not None
+    assert report.featured_player.match is None
+    assert report.featured_player.match_error is not None
+    # Top N players get the exact same treatment for a total batch failure.
+    assert all(p.match_error is not None for p in report.players)
+
+
+def test_featured_player_entering_top_n(tmp_path: Path) -> None:
+    """When she's genuinely inside the tracked group, she must appear as a
+    real, factual Top N entry AND still get her featured-player spotlight."""
+
+    win = _emma_match(won=True)
+    _, report = _run_with_featured_player(tmp_path, emma_rank=8, matches={EMMA_ID: win})
+
+    official_entry = next(p for p in report.players if p.player_id == EMMA_ID)
+    assert official_entry.rank == 8
+    assert official_entry.match == win
+
+    assert report.featured_player is not None
+    assert report.featured_player.rank == 8
+    assert report.featured_player.match == win
+
+
+def test_featured_player_reaching_number_one(tmp_path: Path) -> None:
+    _, report = _run_with_featured_player(tmp_path, emma_rank=1)
+
+    official_entry = next(p for p in report.players if p.player_id == EMMA_ID)
+    assert official_entry.rank == 1
+
+    assert report.featured_player is not None
+    assert report.featured_player.rank == 1
+
+
+def test_featured_player_not_found_anywhere_does_not_break_top_n(tmp_path: Path) -> None:
+    """She's dropped out of the rankings entirely (unranked/retired/etc.) -
+    the Top N pipeline must still succeed, and her section just reports
+    that her rank is unavailable rather than guessing."""
+
+    _, report = _run_with_featured_player(tmp_path, emma_rank=None)
+
+    assert len(report.players) == 10
+    assert report.featured_player is not None
+    assert report.featured_player.rank is None
+    assert report.featured_player.rank_error is not None
+    assert report.errors  # surfaced for operator visibility, but non-fatal
+
+
+def test_featured_player_fallback_fetch_failure_is_isolated_from_a_healthy_top_n(
+    tmp_path: Path,
+) -> None:
+    """The realistic isolation case: the *initial* rankings pool (used for
+    the real Top N) succeeds fine; only the *second*, featured-player-only
+    fallback fetch (needed because she wasn't in the initial pool) fails.
+    The Top N report must be completely unaffected."""
+
+    class _PoolThenFailProvider(RankingsProvider):
+        def __init__(self, pool: list[PlayerRanking]) -> None:
+            self._pool = pool
+            self.calls: list[int] = []
+
+        def get_top_n(self, n: int) -> list[PlayerRanking]:
+            self.calls.append(n)
+            if len(self.calls) == 1:
+                return sorted(self._pool, key=lambda r: r.rank)[:n]
+            raise RuntimeError("simulated outage on the featured-player fallback fetch")
+
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    # Emma is rank 50 - well outside the default rankings_pool_size (25),
+    # so the fallback fetch is guaranteed to trigger and then fail.
+    pipeline._rankings_provider = _PoolThenFailProvider(_synthetic_rankings(50, total=60))
+    pipeline._match_provider = _SyntheticMatchProvider()
+
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert len(report.players) == 10
+    assert all(p.player_id != EMMA_ID for p in report.players)
+    assert report.errors  # non-fatal, but visible
+    assert report.featured_player is not None
+    assert report.featured_player.rank is None
+    assert report.featured_player.rank_error is not None
+    # The output was still written successfully.
+    assert (config.output_dir / "2026-08-09" / "report.json").exists()
+
+
+def test_featured_player_disabled_produces_no_featured_player_field(tmp_path: Path) -> None:
+    """The default (disabled) behavior must be completely unaffected -
+    report.featured_player stays None and nothing about the Top N changes."""
+
+    config = _make_config(tmp_path)
+    assert config.featured_player.enabled is False
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert report.featured_player is None
+
+
+def test_featured_player_segment_appears_after_top_n_and_before_sign_off_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """Full pipeline run (through the real template script generator):
+    Emma's segment must land after every Top N player and before the
+    closing sign-off in the actual written script.txt."""
+
+    win = _emma_match(won=True)
+    config = _make_featured_config(tmp_path)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider(matches={EMMA_ID: win})
+
+    pipeline.run(date(2026, 8, 9))
+
+    script = (config.output_dir / "2026-08-09" / "script.txt").read_text()
+    paragraphs = [p for p in script.split("\n\n") if p.strip()]
+    emma_index = next(i for i, p in enumerate(paragraphs) if EMMA_NAME in p)
+
+    assert emma_index == len(paragraphs) - 2  # last paragraph is the sign-off
+    for i, paragraph in enumerate(paragraphs[:-1]):
+        if EMMA_NAME in paragraph:
+            continue
+        assert i < emma_index

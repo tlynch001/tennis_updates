@@ -27,6 +27,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 
 - [Data source research & recommendation](#data-source-research--recommendation)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
+- [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -448,6 +449,119 @@ see each individual request logged as it happens
   added complexity. Revisit if instrumentation on a real deployment shows
   otherwise.
 
+## Featured player (recurring editorial segment)
+
+A small, opt-in, recurring spotlight on one specific player - shipped
+configured for Emma Navarro (WTA player id `325410`) with a running
+"America's favorite" joke, disabled by default. It exists specifically so
+the official Top N coverage never has to compromise on being factual: every
+number in this segment comes from the exact same
+`RankingsProvider`/`MatchProvider` architecture as the Top N (see
+["Architecture & extending it"](#architecture--extending-it)) - only the
+*narration wording* built from those facts is allowed a sense of humor, and
+only in this one segment.
+
+### Enabling it
+
+```yaml
+featured_player:
+  enabled: true
+  player_id: "325410"   # Emma Navarro's real api.wtatennis.com player id
+  name: Emma Navarro
+  tagline: america_favorite
+```
+
+`tagline` selects which narration personality/phrase pool flavors the
+commentary - currently only `america_favorite`
+(`wta_daily/scripts_gen/featured_player_phrases.py`) ships, but nothing
+about the mechanism is Emma-specific by name: pointing a different
+`player_id`/`name` at the same tagline works today, and a future player
+with their own running joke would just need a sibling phrase module and a
+new tagline value - no pipeline changes.
+
+### How her data is retrieved (no bespoke lookups)
+
+- **Ranking**: `DailyPipeline` already fetches a rankings *pool* larger than
+  `top_n` in one request each run (see "Understanding & optimizing API
+  usage" above). The featured player's ranking is looked up in that same
+  pool first - free, since it's the identical response already in memory.
+  Only if she isn't in it (e.g. she's ranked outside the configured
+  `rankings_pool_size`) does the pipeline fall back to **one** additional
+  `RankingsProvider.get_top_n(n)` call for a larger page - the same
+  provider interface used everywhere else, never a dedicated "look up one
+  player" endpoint.
+- **Match**: she's added to the exact same batched
+  `MatchProvider.get_matches_for_date(...)` call already made for the Top
+  N (only if she isn't already one of them) - for `wta_official`'s
+  day-first tournament scan, this costs **zero** extra HTTP requests,
+  since that scan already reads every active tournament's full match list
+  regardless of which specific players are being checked against it.
+- **Movement**: `RankingsSnapshotStore` records her rank separately from
+  the tracked Top N group (a `featured_players` entry alongside each day's
+  snapshot) purely so `get_previous_player_rank` can answer "what was her
+  rank last time" the same way it would for anyone in the Top N - this
+  never affects what counts as "NEW" for the official group.
+
+### Failure isolation
+
+Every step above is wrapped so a failure (rank lookup, match lookup, or an
+unexpected error while assembling the section) can never abort or affect
+the Top N report - it's logged, recorded in `report.json`'s `errors` list
+for visibility, and the featured-player section simply omits whatever
+couldn't be determined (`rank`/`match` stay `null`, no default/guessed
+values). See `DailyPipeline._safe_resolve_featured_player_ranking` and
+`_safe_build_featured_player_report`.
+
+### Report output
+
+Lives in its own `featured_player` object in `report.json` - never merged
+into the official `players` list, even on the (rare, but handled) day she's
+actually ranked inside the Top N, so a consumer can always tell "official
+Top N" apart from "editorial spotlight":
+
+```json
+"featured_player": {
+  "name": "Emma Navarro",
+  "player_id": "325410",
+  "tagline": "america_favorite",
+  "rank": 28,
+  "points": 1669,
+  "movement": "same",
+  "previous_rank": 28,
+  "played": true,
+  "won": true,
+  "opponent": "Anhelina Kalinina",
+  "score": "3-6,6-4,6-2",
+  "tournament": "Cincinnati",
+  "round": "Main Draw Round 2",
+  "match_date": "2026-08-15"
+}
+```
+
+### Narration tone and variation
+
+`wta_daily/scripts_gen/featured_player.py` builds a short (1-3 sentence)
+paragraph inserted after every Top N player and before the final sign-off.
+Several independent template axes (intro, "favorite" label, movement
+flavor, Top N framing, match result, and an occasional - not daily -
+"#1 in our hearts" aside, gated at a fixed probability) are drawn from the
+same per-run seeded `random.Random` the rest of the script already uses,
+so wording varies day to day without ever repeating a canned paragraph, and
+a report with the feature disabled produces byte-identical output to
+before this feature existed. Framing adapts automatically to her real rank:
+"pursuit" language while she's outside the Top N, "arrived" language the
+day she's genuinely inside it (the "trying to break in" framing is retired
+the moment it stops being true), and a distinct, joke-free acknowledgment
+if she ever reaches world No. 1 - see
+`tests/test_featured_player_narration.py` for the full set of tone rules
+enforced by tests (never a mathematically specific pursuit claim, never a
+fabricated match result, never "new"/"debut" language on a first-ever run,
+substantial variation across at least a few dozen days).
+
+Graphics were deliberately left untouched for this feature (the official
+leaderboard stays the official leaderboard) - the priority here was data
+correctness and narration, per the feature's own scope.
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -548,6 +662,8 @@ Everything tunable lives in one YAML file - see the fully-commented
   match' to 'did she play yesterday'" above).
 - `rankings_provider` / `match_provider` - `{provider: <name>, ...options}`;
   `<name>` is looked up in the plugin registry (see below).
+- `featured_player` - the recurring "America's favorite" Emma Navarro
+  segment; `enabled: false` by default. See ["Featured player"](#featured-player-recurring-editorial-segment) above.
 - `script.generator` - `template` (default, offline, free) or `openai`
   (requires `OPENAI_API_KEY`).
 - `graphics.theme` - all colors, plus optional custom font paths.
@@ -824,9 +940,10 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 160 unit/integration tests cover models (including `DailyReport.match_target_date`
-and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction)
-round-tripping), movement math (including the "unknown" vs "new"
+Over 210 unit/integration tests cover models (including `DailyReport.match_target_date`
+and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
+`FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
+math (including the "unknown" vs "new"
 distinction), country/flag resolution, config loading, the plugin registry,
 snapshot persistence (including the wider-pool-metadata-without-affecting-
 movement-history behavior), the sample providers, `MatchProvider`'s default
@@ -850,12 +967,21 @@ confirmed absent by an earlier source")
 real stale-namesake-record incident described above), the template script
 generator (including the "mention movement
 only when it changed", "never say a baseline run's players are new", "the
-sign-off is always last" and "no verbatim-identical script two days in a
-row" behaviors), graphics rendering, and a full end-to-end pipeline run
-(including the per-player-failure-isolation scenario and the "rankings
-fetched exactly once per run, wider pool exposed for reuse" behavior) - all
-using the offline `sample` providers or mocked HTTP responses, so `pytest`
-never makes a real network call.
+sign-off is always last", "no verbatim-identical script two days in a
+row", and "the featured-player segment lands after the Top N and before
+the sign-off, or not at all if disabled" behaviors), the featured-player
+narration builder in isolation (`tests/test_featured_player_narration.py` -
+pursuit vs. arrived vs. world-No.-1 framing, honest movement/match
+reporting, the occasional-not-daily "#1 in our hearts" gate, and
+substantial wording variation across many simulated days), graphics
+rendering, and a full end-to-end pipeline run (including the
+per-player-failure-isolation scenario, the "rankings fetched exactly once
+per run, wider pool exposed for reuse" behavior, and the featured player's
+every outside-Top-N/moving-toward-Top-N/steady/moving-down/win/loss/no-match/
+match-unavailable/entered-Top-N/reached-No.-1/lookup-failure-isolated
+scenario in `tests/test_pipeline_integration.py`) - all using the offline
+`sample` providers, synthetic in-test providers, or mocked HTTP responses,
+so `pytest` never makes a real network call.
 
 ```bash
 pytest              # unit + integration tests

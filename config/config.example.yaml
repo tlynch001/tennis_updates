@@ -98,6 +98,23 @@ match_provider:
   #     provider: live_tennis_api
   #     api_key_env: LIVETENNISAPI_KEY
 
+# --- Featured player (recurring editorial segment, disabled by default) ----
+# A short, playful, recurring spotlight on one specific player, layered on
+# top of - never mixed into - the factual Top N coverage above. Every fact
+# reported for her (rank, points, movement, match result) still comes from
+# the exact same rankings_provider/match_provider configured above; this
+# block only says *who* and *which narration personality* (`tagline`) to
+# use for the commentary. See README.md's "Featured player" section for
+# the full tone guidelines and wta_daily/scripts_gen/featured_player_phrases.py
+# for the "america_favorite" wording this ships with (tuned for Emma
+# Navarro, WTA player id 325410, but not Emma-specific by name - a future
+# featured player could reuse the same tagline, or a different one).
+featured_player:
+  enabled: false
+  player_id: "325410"  # Emma Navarro's real api.wtatennis.com player id
+  name: Emma Navarro
+  tagline: america_favorite
+
 # --- Networking (used by every HTTP-based provider) ----------------------
 network:
   timeout_seconds: 15
