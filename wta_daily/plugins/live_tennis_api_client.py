@@ -28,11 +28,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from wta_daily import api_usage
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import ConfigurationError
 from wta_daily.http_client import HttpClient
 
 DEFAULT_BASE_URL = "https://api.livetennisapi.com/api/public/v1"
+
+#: api_usage category - see wta_daily.api_usage and the README's
+#: "Understanding API usage" section.
+_CATEGORY = "LiveTennisAPI"
 
 
 class LiveTennisApiClient:
@@ -59,6 +64,7 @@ class LiveTennisApiClient:
         """``GET /players`` - search players by (partial, case-insensitive) name."""
 
         url = f"{self._base_url}/players"
+        api_usage.record(_CATEGORY)
         data = self._http.get_json(
             url, params={"search": name, "limit": limit}, headers=self._auth_header
         )
@@ -71,6 +77,7 @@ class LiveTennisApiClient:
         """``GET /history/matches`` - a player's completed matches, newest first."""
 
         url = f"{self._base_url}/history/matches"
+        api_usage.record(_CATEGORY)
         data = self._http.get_json(
             url, params={"player": player_id, "limit": limit}, headers=self._auth_header
         )

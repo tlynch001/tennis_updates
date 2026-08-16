@@ -28,11 +28,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from wta_daily import api_usage
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import ConfigurationError
 from wta_daily.http_client import HttpClient
 
 DEFAULT_BASE_URL = "https://api.api-tennis.com/tennis/"
+
+#: api_usage category - see wta_daily.api_usage and the README's
+#: "Understanding API usage" section.
+_CATEGORY = "API-Tennis"
 
 
 class ApiTennisClient:
@@ -57,6 +62,7 @@ class ApiTennisClient:
 
     def _call(self, method: str, **params: Any) -> list[dict[str, Any]]:
         query = {"method": method, "APIkey": self._api_key, **params}
+        api_usage.record(_CATEGORY)
         data = self._http.get_json(self._base_url, params=query)
         if not isinstance(data, dict) or data.get("success") != 1:
             raise ValueError(f"api-tennis.com method={method} did not report success: {data!r}")

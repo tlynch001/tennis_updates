@@ -25,10 +25,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from wta_daily import api_usage
 from wta_daily.config import NetworkConfig
 from wta_daily.http_client import HttpClient
 
 DEFAULT_BASE_URL = "https://api.wtatennis.com/tennis"
+
+#: api_usage categories - see wta_daily.api_usage and the README's
+#: "Understanding API usage" section.
+_CATEGORY_RANKINGS = "WTA rankings"
+_CATEGORY_TOURNAMENT_DISCOVERY = "WTA tournament discovery"
+_CATEGORY_MATCH_RESULTS = "WTA match results"
 
 
 class WtaOfficialApiClient:
@@ -37,11 +44,18 @@ class WtaOfficialApiClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, network: NetworkConfig | None = None) -> None:
         self._base_url = base_url.rstrip("/")
         self._http = HttpClient(network)
+        # Per-instance (i.e. per-run, since one client is built per pipeline
+        # run) cache so that asking for the same tournament-catalogue page
+        # twice - e.g. page 0 is fetched once up front to learn the total
+        # entry count, and could otherwise legitimately fall inside the
+        # scan range too - never issues a second identical HTTP request.
+        self._tournament_page_cache: dict[tuple[int, int], dict[str, Any]] = {}
 
     def get_rankings(
         self, *, ranking_type: str = "rankSingles", metric: str = "singles", page_size: int = 10
     ) -> list[dict[str, Any]]:
         url = f"{self._base_url}/players/ranked"
+        api_usage.record(_CATEGORY_RANKINGS)
         data = self._http.get_json(
             url, params={"type": ranking_type, "metric": metric, "page": 0, "pageSize": page_size}
         )
@@ -63,6 +77,7 @@ class WtaOfficialApiClient:
         """
 
         url = f"{self._base_url}/players/{player_id}/matches"
+        api_usage.record(_CATEGORY_MATCH_RESULTS)
         data = self._http.get_json(url, params={"page": 0, "pageSize": page_size, "sort": "desc"})
         matches = data.get("matches", []) if isinstance(data, dict) else []
         if not isinstance(matches, list):
@@ -81,12 +96,24 @@ class WtaOfficialApiClient:
         the *end* - see :func:`wta_daily.plugins.matches.wta_official._find_active_tournaments`
         for how this is used without scanning the whole ~19,000-entry list
         on every run.
+
+        Cached per ``(page, page_size)`` for the lifetime of this client
+        instance (i.e. for one pipeline run), so asking for the same page
+        twice - which happens legitimately when page 0 is fetched up front
+        to learn the total entry count and also happens to fall inside the
+        scan range - only ever issues one real HTTP request.
         """
 
+        cache_key = (page, page_size)
+        if cache_key in self._tournament_page_cache:
+            return self._tournament_page_cache[cache_key]
+
         url = f"{self._base_url}/tournaments"
+        api_usage.record(_CATEGORY_TOURNAMENT_DISCOVERY)
         data = self._http.get_json(url, params={"page": page, "pageSize": page_size})
         if not isinstance(data, dict) or "content" not in data:
             raise ValueError(f"Unexpected tournaments response shape from {url}: {type(data)!r}")
+        self._tournament_page_cache[cache_key] = data
         return data
 
     def get_tournament_matches(
@@ -103,6 +130,7 @@ class WtaOfficialApiClient:
         """
 
         url = f"{self._base_url}/tournaments/{tournament_group_id}/{year}/matches"
+        api_usage.record(_CATEGORY_MATCH_RESULTS)
         data = self._http.get_json(url, params={"page": 0, "pageSize": page_size})
         matches = data.get("matches", []) if isinstance(data, dict) else []
         if not isinstance(matches, list):

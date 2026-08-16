@@ -13,6 +13,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
+from wta_daily import api_usage
 from wta_daily.config import AppConfig
 from wta_daily.exceptions import (
     DataProviderError,
@@ -64,6 +65,7 @@ class DailyPipeline:
     def run(self, report_date: date | None = None) -> DailyReport:
         report_date = report_date or date.today()
         logger.info("=== WTA Daily pipeline starting for %s ===", report_date.isoformat())
+        api_usage.reset()
 
         report = self._build_report(report_date)
 
@@ -97,6 +99,7 @@ class DailyPipeline:
             )
         else:
             logger.info("Finished successfully.")
+        api_usage.log_summary()
         return report
 
     def _build_report(self, report_date: date) -> DailyReport:
