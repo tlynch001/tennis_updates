@@ -279,12 +279,13 @@ class YouTubeConfig:
     the official YouTube Data API v3 (never Selenium/browser automation).
 
     ``enabled`` is ``False`` by default and MUST stay that way unless a
-    caller deliberately opts in - see :mod:`wta_daily.youtube.uploader`'s
-    module docstring for the guarantee this implies: while disabled,
-    nothing in that package is ever imported, no OAuth flow runs, and no
-    network call to Google is made, so the rest of the application (and
-    anyone who hasn't set up Google Cloud credentials at all) is
-    completely unaffected by this feature existing.
+    caller deliberately opts in - see :mod:`wta_daily.youtube`'s package
+    docstring for the guarantee this implies: while disabled, no Google
+    library import is required, no OAuth credential file is ever read, no
+    network call to Google is made, and no upload is attempted, so the
+    rest of the application (and anyone who hasn't set up Google Cloud
+    credentials at all) behaves exactly as it did before this feature
+    existed.
 
     ``client_secret_path``/``token_path`` are *locations* of secret files,
     not secrets themselves - unlike ``VoiceConfig.api_key_env`` (a single

@@ -857,14 +857,19 @@ on top of the config-level default every other Phase 2/3 feature already
 gets.
 
 **While `youtube.enabled` is `false` (the default), nothing changes about
-how this project behaves today**: `wta_daily/youtube/` is never imported by
-the pipeline or CLI in a way that requires its optional dependencies to be
-installed, no OAuth flow ever runs, no credential file is ever read, and no
-network call to Google is ever made. This is enforced structurally, not
-just by convention - see `wta_daily/youtube/uploader.py`'s module docstring:
-every `google-api-python-client`/`google-auth-oauthlib` import is deferred
-inside a function body, and `publish_report()` (the single entry point)
-checks `config.enabled` before doing anything else at all.
+how this project behaves today.** Concretely: the optional
+`google-api-python-client`/`google-auth-oauthlib` packages are never
+required, no OAuth credential file is ever read, no network call to Google
+is ever made, and no upload is ever attempted - the rest of the pipeline
+runs exactly as it did before this feature existed. (`wta_daily/youtube/`
+itself - a small, dependency-free Python package - is still imported by
+the pipeline/CLI the same way any other internal module is; what matters,
+and what's actually guaranteed, is the list above, not whether that one
+lightweight import happens.) This is enforced structurally, not just by
+convention: every `google-api-python-client`/`google-auth-oauthlib` import
+is deferred inside a function body (see `wta_daily/youtube/uploader.py`'s
+module docstring), and `publish_report()` (the single entry point) checks
+`config.enabled` before doing anything else at all.
 
 ### The video title (`output/<date>/title.txt`)
 
@@ -893,49 +898,141 @@ Before you can enable this feature at all:
    [Google Cloud Console](https://console.cloud.google.com/).
 2. **APIs & Services -> Library** -> enable **YouTube Data API v3**.
 3. **APIs & Services -> OAuth consent screen** -> configure it (External is
-   fine for a personal channel; you don't need to submit it for
-   verification to use it yourself - Google will show an "unverified app"
-   warning during the one-time authorization step below, which is expected
-   and safe to click through for your own app/your own channel).
+   fine for a personal channel).
 4. **APIs & Services -> Credentials -> Create Credentials -> OAuth client
    ID** -> Application type **Desktop app**. Download the resulting JSON.
 5. Save that file as `secrets/youtube_client_secret.json` (the default
    `youtube.client_secret_path` - see `config.example.yaml`). The `secrets/`
-   directory is git-ignored (see `.gitignore`) - **never commit this file**.
+   directory is git-ignored (see `.gitignore`) - **never commit this file**,
+   and never commit `secrets/youtube_token.json` either once it exists (see
+   below) - both contain credentials capable of uploading to your channel.
+
+**Before relying on this for unattended daily uploads, read "Testing vs.
+production: avoiding a 7-day token expiry" below.** A consent screen left
+in its default "Testing" state works fine for trying the feature out, but
+will silently break an unattended Pi schedule about a week in.
 
 ### Initial interactive authorization (once, by hand)
 
 The very first time YouTube publishing runs with no cached token yet,
 `wta_daily/youtube/auth.py` opens a real OAuth consent screen in a browser
-(`InstalledAppFlow.run_local_server`) and grants only the narrow
-`youtube.upload` scope. On a **headless Raspberry Pi over SSH**, the
-easiest way to do this one-time step is either:
+(`InstalledAppFlow.run_local_server(port=0)`) and grants only the narrow
+`youtube.upload` scope. `port=0` deliberately asks the OS for whichever
+local port happens to be free, printing the actual `http://localhost:<port>/`
+redirect URL it's listening on to the console - there is no fixed port to
+rely on.
 
-- Run the very first authorized call **from a machine with a browser** (a
-  laptop checkout of the same repo, same `secrets/youtube_client_secret.json`),
-  then copy the resulting `secrets/youtube_token.json` to the Pi; or
-- SSH into the Pi with local port forwarding
-  (`ssh -L 8080:localhost:8080 pi@<host>`) so the Pi-side `run_local_server`
-  callback reaches your laptop's browser.
+That makes a **headless Raspberry Pi over SSH** awkward to authorize
+directly (you'd have to read the just-in-time port from the Pi's console
+output and forward exactly that port for that one run). The recommended
+approach for this project instead is:
+
+**Run the one-time authorization on a machine with a browser** - a laptop
+checkout of the same repo (or WSL, if you're on Windows), using the same
+`secrets/youtube_client_secret.json` - then securely copy (`scp`) the
+resulting `secrets/youtube_token.json` over to the Pi's `secrets/`
+directory. Nothing about the token file is Pi-specific, so this works
+cleanly.
+
+If you'd still rather authorize directly on the Pi over SSH, forwarding
+the dynamic port is possible but more fiddly: start the auth attempt on
+the Pi, note the exact port number printed in the `http://localhost:<port>/...`
+URL it prints, then **in a separate terminal** open
+`ssh -L <that-port>:localhost:<that-port> pi@<host>` and finish the flow
+in your local browser - the port will very likely differ between runs, so
+there's no single command to save and reuse.
 
 Either way, run one upload by hand first (see "Testing an upload" below) -
 that's what actually triggers this flow. Once it succeeds, you're done with
-this step permanently (until you revoke/rotate credentials).
+this step permanently (until you revoke/rotate credentials, or your
+consent screen's publishing status forces re-authorization - see next).
 
 ### Where the token lives, and how unattended refresh works
 
 The resulting OAuth token (including its long-lived refresh token) is
 cached at `secrets/youtube_token.json` (the default `youtube.token_path`) -
-also git-ignored, **never commit it either**. Every later call - including
-every unattended scheduled run on the Pi - loads this cached token and, if
-the short-lived access token has expired, silently refreshes it via
+also git-ignored, **never commit it either** (like the client secret, it's
+a credential capable of uploading to your channel - see "Protecting the
+token file" below for the file-permission hardening this project applies
+automatically). Every later call - including every unattended scheduled
+run on the Pi - loads this cached token and, if the short-lived access
+token has expired, silently refreshes it via
 `google.auth.transport.requests.Request()` and re-caches the result, with
-no browser and no human involved. If the refresh token itself is ever
-revoked (e.g. you revoke access in your Google Account settings), the next
-run raises a clear `YouTubeAuthError` explaining that the interactive
-authorization needs to be repeated - it never crashes with a bare
-stack trace, and it never logs the token/client-secret contents themselves
-(see "Logging" below).
+no browser and no human involved. If the refresh token itself stops
+working - revoked by hand in your Google Account settings, or expired per
+"Testing vs. production" immediately below - the next run raises a clear
+`YouTubeAuthError` explaining that the interactive authorization needs to
+be repeated - it never crashes with a bare stack trace, and it never logs
+the token/client-secret contents themselves (see "Logging" below).
+
+### Testing vs. production: avoiding a 7-day token expiry
+
+**This matters for the project's actual goal** - a Pi that uploads a video
+every morning with no human involved - so read it before you walk away
+from a working setup.
+
+A freshly created Google Cloud OAuth consent screen starts in **Testing**
+publishing status. That's perfectly fine for initially configuring and
+testing this integration (everything in "Testing an upload" above works
+normally), but Google enforces a hard rule for apps left in Testing:
+**refresh tokens issued while a consent screen is in Testing status expire
+after about 7 days**, regardless of how often they're used. That would
+mean the very first unattended run more than a week after you authorized
+would fail with `YouTubeAuthError`, needing you to notice, SSH in, and
+redo the interactive authorization - exactly the outcome unattended
+publishing is supposed to avoid.
+
+**The fix**: once you're happy with a few test uploads, go to **APIs &
+Services -> OAuth consent screen** (Google Cloud Console) and change the
+app's **publishing status from Testing to "In production"** (the
+**Publish App** button) - then re-run the interactive authorization once
+more so the newly issued token isn't subject to the 7-day Testing-mode
+limit. This is a small, one-time console setting, separate from writing
+any code here.
+
+**"In production" is not the same thing as Google's full app
+verification** - it's worth being precise about the difference:
+
+- **Publishing status (Testing vs. In production)** is what controls the
+  7-day refresh-token expiry described above. Moving to "In production"
+  by itself does not require submitting your app for Google's review.
+- **Verification** is a separate, optional-for-many-cases review process
+  Google may require for certain scopes/audiences (e.g. sensitive or
+  restricted scopes requested by apps used by many external users, or
+  apps that want their name/logo shown on the consent screen without a
+  warning). For a personal project like this one - a single Google
+  account (yours) authorizing its own single-purpose app for a narrow
+  upload-only scope - you can typically move to "In production" and keep
+  using it indefinitely as your own test user without completing full
+  verification; you'll still see Google's "unverified app" warning during
+  consent, which is expected and safe to click through for your own
+  app/your own channel (do not confuse this cosmetic warning with the
+  7-day token-expiry issue - they're different Google policies).
+- Google's own requirements here can change over time and depend on
+  exactly which scopes/audience you configure, so treat this section as
+  "what to expect and where to look," not a permanent guarantee - if
+  Google's console flags anything unexpected for your specific project,
+  follow its guidance directly.
+
+### Protecting the token file
+
+`secrets/youtube_token.json` contains a refresh token capable of
+authorizing uploads to your channel indefinitely, so both it and
+`secrets/youtube_client_secret.json` are treated as sensitive credentials
+- **never commit either file to git** (both live under the git-ignored
+`secrets/` directory - see `.gitignore`).
+
+On top of that, every time this project writes or refreshes the token file
+(`wta_daily/youtube/auth.py`'s `_save_token`), it also restricts the
+file's permissions to the owning user only (`chmod 600`, i.e.
+`-rw-------`) on POSIX systems (Linux/macOS, including the Raspberry Pi).
+This is applied automatically - there is nothing to configure - and is
+best-effort: if `chmod` itself fails for some reason (e.g. an unusual
+filesystem), it's logged as a warning rather than aborting the run, since
+having written the token successfully matters more than this hardening
+step succeeding. On Windows, this step is skipped entirely (Unix
+permission bits don't apply there), which never causes a failure -
+Windows development is unaffected either way.
 
 ### Testing an upload as `private` or `unlisted`
 

@@ -195,12 +195,13 @@ publishing:
 # --- YouTube publishing (Phase 3, disabled by default) ----------------------
 # Publishes the finished output/<date>/video.mp4 to YouTube via the official
 # YouTube Data API v3 (never Selenium/browser automation). `enabled: false`
-# is the safe default - nothing in wta_daily/youtube/ is ever imported, no
-# OAuth flow runs, and no network call to Google happens while it stays
-# false, so the rest of the application works identically whether or not
-# you've ever set up a Google Cloud project. See README.md's "YouTube
-# publishing" section for the one-time setup this requires before flipping
-# it on, and for how duplicate-upload protection and --upload-youtube work.
+# is the safe default - no Google library is required, no OAuth credential
+# file is ever read, no network call to Google happens, and no upload is
+# attempted while it stays false, so the rest of the application works
+# identically whether or not you've ever set up a Google Cloud project. See
+# README.md's "YouTube publishing" section for the one-time setup this
+# requires before flipping it on, and for how duplicate-upload protection
+# and --upload-youtube work.
 youtube:
   enabled: false
   # "private" | "unlisted" | "public" - test with "unlisted" (or "private")

@@ -26,6 +26,7 @@ only ever happens when ``youtube.enabled: true``.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -141,3 +142,33 @@ def run_interactive_authorization(config: YouTubeConfig) -> Any:
 def _save_token(creds: Any, token_path: Path) -> None:
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(creds.to_json(), encoding="utf-8")
+    _restrict_token_file_permissions(token_path)
+
+
+def _restrict_token_file_permissions(token_path: Path) -> None:
+    """Best-effort: restrict the cached OAuth token file to the owning user
+    only (``chmod 600``), since it contains a refresh token capable of
+    authorizing uploads to the channel indefinitely.
+
+    POSIX-only (Linux/macOS, including the Raspberry Pi deployment target)
+    - Windows' permission model doesn't map onto Unix mode bits, so this is
+    a deliberate no-op there rather than an attempt that would either fail
+    or silently do the wrong thing. Never allowed to fail the run: on an
+    unusual filesystem where ``chmod`` itself fails (e.g. some network
+    mounts), this logs a warning and continues - the token having been
+    written successfully matters far more than this hardening step
+    succeeding.
+    """
+
+    if os.name != "posix":
+        return
+    try:
+        token_path.chmod(0o600)
+    except OSError as exc:
+        logger.warning(
+            "Could not restrict file permissions on the cached YouTube token at %s (%s); "
+            "consider running 'chmod 600 %s' manually.",
+            token_path,
+            exc,
+            token_path,
+        )

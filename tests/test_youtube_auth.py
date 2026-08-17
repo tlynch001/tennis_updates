@@ -11,6 +11,8 @@ depends on them.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -78,6 +80,28 @@ def test_get_credentials_refreshes_an_expired_token_and_caches_it(
     # The refreshed token was cached back to disk for the next run.
     saved = token_path.read_text(encoding="utf-8")
     assert "refreshed-access-token" in saved
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only apply on POSIX systems")
+def test_get_credentials_leaves_a_refreshed_token_file_owner_only_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from google.oauth2.credentials import Credentials
+
+    token_path = tmp_path / "secrets" / "youtube_token.json"
+    _write_token(token_path, expired=True)
+    config = YouTubeConfig(token_path=token_path, client_secret_path=tmp_path / "missing.json")
+
+    def fake_refresh(self: Credentials, _request: object) -> None:
+        self.token = "refreshed-access-token"
+        self.expiry = None
+
+    monkeypatch.setattr(Credentials, "refresh", fake_refresh)
+
+    get_credentials(config)
+
+    mode = stat.S_IMODE(token_path.stat().st_mode)
+    assert mode == 0o600
 
 
 def test_get_credentials_raises_a_clear_error_when_refresh_fails(
