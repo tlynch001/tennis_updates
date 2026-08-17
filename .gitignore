@@ -18,6 +18,11 @@ env/
 .env
 *.env.local
 
+# YouTube OAuth client secret / cached refresh token (Phase 3 publishing).
+# Never commit these - see README.md's "YouTube publishing" section.
+secrets/*
+!secrets/.gitkeep
+
 # Local configuration copied from config.example.yaml
 config/config.yaml
 

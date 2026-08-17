@@ -130,11 +130,51 @@ def test_publishing_config_can_be_disabled_independently(tmp_path: Path) -> None
     assert config.publishing.description_enabled is True
 
 
-def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_youtube_disabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.youtube.enabled is False
+    assert config.youtube.privacy == "unlisted"
+    assert config.youtube.category_id == "17"
+    assert config.youtube.client_secret_path == Path("secrets/youtube_client_secret.json")
+    assert config.youtube.token_path == Path("secrets/youtube_token.json")
+
+
+def test_youtube_reads_full_block(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "voice:\n  enabled: true\n  api_key_env: MY_TEST_KEY\n", encoding="utf-8"
+        "youtube:\n"
+        "  enabled: true\n"
+        "  privacy: private\n"
+        "  category_id: '22'\n"
+        "  client_secret_path: secrets/custom_secret.json\n"
+        "  token_path: secrets/custom_token.json\n",
+        encoding="utf-8",
     )
+
+    config = load_config(config_path)
+
+    assert config.youtube.enabled is True
+    assert config.youtube.privacy == "private"
+    assert config.youtube.category_id == "22"
+    assert config.youtube.client_secret_path == Path("secrets/custom_secret.json")
+    assert config.youtube.token_path == Path("secrets/custom_token.json")
+
+
+def test_youtube_rejects_invalid_privacy_value(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("youtube:\n  privacy: everyone\n", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError):
+        load_config(config_path)
+
+
+def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("voice:\n  enabled: true\n  api_key_env: MY_TEST_KEY\n", encoding="utf-8")
     config = load_config(config_path)
 
     monkeypatch.delenv("MY_TEST_KEY", raising=False)

@@ -192,6 +192,28 @@ publishing:
   thumbnail_enabled: true
   description_enabled: true
 
+# --- YouTube publishing (Phase 3, disabled by default) ----------------------
+# Publishes the finished output/<date>/video.mp4 to YouTube via the official
+# YouTube Data API v3 (never Selenium/browser automation). `enabled: false`
+# is the safe default - nothing in wta_daily/youtube/ is ever imported, no
+# OAuth flow runs, and no network call to Google happens while it stays
+# false, so the rest of the application works identically whether or not
+# you've ever set up a Google Cloud project. See README.md's "YouTube
+# publishing" section for the one-time setup this requires before flipping
+# it on, and for how duplicate-upload protection and --upload-youtube work.
+youtube:
+  enabled: false
+  # "private" | "unlisted" | "public" - test with "unlisted" (or "private")
+  # before ever switching to "public".
+  privacy: unlisted
+  # YouTube video category id - 17 = Sports.
+  category_id: "17"
+  # Where the OAuth "Desktop app" client-secret JSON (from Google Cloud
+  # Console) and the auto-refreshing cached token live. Both are git-ignored
+  # (see .gitignore) - NEVER commit either file.
+  # client_secret_path: secrets/youtube_client_secret.json
+  # token_path: secrets/youtube_token.json
+
 # --- Tournament preferences --------------------------------------------------
 # Used by future modules (e.g. tournament previews) to prioritize which
 # events get extra narration attention.

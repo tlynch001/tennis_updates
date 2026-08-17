@@ -1,0 +1,16 @@
+# Optional dependencies for Phase 3 (YouTube publishing, youtube.enabled: true
+# in config.yaml). NOT required to run the application otherwise - the base
+# requirements.txt install works completely fine with youtube.enabled: false
+# (the default), including on a Raspberry Pi with no Google Cloud account at
+# all.
+#
+# Install only if/when you actually enable YouTube publishing:
+#   pip install -r requirements-youtube.txt
+# (or: pip install -e ".[youtube]")
+#
+# See README.md's "YouTube publishing" section for the one-time Google Cloud
+# project / OAuth setup this requires before first use.
+
+google-api-python-client>=2.100,<3
+google-auth-httplib2>=0.2,<1
+google-auth-oauthlib>=1.2,<2

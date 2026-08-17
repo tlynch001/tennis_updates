@@ -4,8 +4,11 @@ Automated, unattended generation of the **assets** for a daily YouTube video
 covering the WTA Top N women's tennis rankings: rankings + movement, each
 player's latest match, a narration script, broadcast-style graphics, and
 (optionally) AI narration and a finished MP4. **Nothing is ever uploaded to
-YouTube automatically** - this project stops at "ready for you to review,"
-by design.
+YouTube automatically unless you deliberately enable it** (`youtube.enabled:
+true`) - the default, out-of-the-box behavior stops at "ready for you to
+review," by design. See ["YouTube publishing"](#youtube-publishing) for the
+fully optional, off-by-default Phase 3 that adds a real upload via the
+official YouTube Data API v3.
 
 Built as a proper, installable Python package with a **plugin architecture**:
 every external dependency (rankings data, match data, narration script
@@ -18,8 +21,9 @@ writing one new module, not rewriting the pipeline. See
 This repository currently implements **Phase 1** end-to-end (rankings ->
 movement -> matches -> `report.json` -> `script.txt` -> `leaderboard.png` ->
 `player_cards/*.png`) plus working, opt-in Phase 2 building blocks (ElevenLabs
-narration, ffmpeg video assembly, git automation) that are disabled by
-default. See ["Roadmap"](#roadmap) for what's next.
+narration, ffmpeg video assembly, git automation) and an opt-in **Phase 3**
+(YouTube publishing) - all disabled by default. See ["Roadmap"](#roadmap) for
+what's next.
 
 ---
 
@@ -30,6 +34,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
 - [Slide timing synchronization](#slide-timing-synchronization)
 - [YouTube publishing assets](#youtube-publishing-assets)
+- [YouTube publishing (Phase 3: the actual upload)](#youtube-publishing)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -841,6 +846,244 @@ exact same call counts (2 rankings, 26 tournament discovery, 1 match
 results = 29 total, for a run with the featured player enabled) before
 and after adding these three artifacts.
 
+## YouTube publishing
+
+**Optional, off by default** (`youtube.enabled: false`). This is the one
+feature in the project that has a real, external, user-visible side effect
+(a public/unlisted/private video appearing on a real YouTube channel), so
+it gets its own explicit opt-in, its own duplicate-upload protection, and
+its own "never touch a successfully generated local artifact" guarantee -
+on top of the config-level default every other Phase 2/3 feature already
+gets.
+
+**While `youtube.enabled` is `false` (the default), nothing changes about
+how this project behaves today**: `wta_daily/youtube/` is never imported by
+the pipeline or CLI in a way that requires its optional dependencies to be
+installed, no OAuth flow ever runs, no credential file is ever read, and no
+network call to Google is ever made. This is enforced structurally, not
+just by convention - see `wta_daily/youtube/uploader.py`'s module docstring:
+every `google-api-python-client`/`google-auth-oauthlib` import is deferred
+inside a function body, and `publish_report()` (the single entry point)
+checks `config.enabled` before doing anything else at all.
+
+### The video title (`output/<date>/title.txt`)
+
+`wta_daily/title.py` is a single, deterministic, canonical function -
+`generate_title(report)` - producing exactly:
+
+```text
+WTA Top 10 Update — August 17, 2026
+```
+
+`{top_n}` comes from `len(report.players)` (not a hard-coded "10"), and the
+date comes from `report.report_date` - the pipeline's own canonical "what
+day is this for" field, never the system clock - so re-publishing an older
+report with `--upload-youtube` (below) always titles it correctly. No LLM
+call: the format is fixed, so there's nothing to generate creatively.
+Written alongside every other daily artifact (on by default, no toggle -
+it costs nothing to produce), and it's the same string
+`wta_daily/youtube/uploader.py` sends to the YouTube Data API as the
+video's title, so there is exactly one place this format is defined.
+
+### One-time Google Cloud setup
+
+Before you can enable this feature at all:
+
+1. Create (or reuse) a project at the
+   [Google Cloud Console](https://console.cloud.google.com/).
+2. **APIs & Services -> Library** -> enable **YouTube Data API v3**.
+3. **APIs & Services -> OAuth consent screen** -> configure it (External is
+   fine for a personal channel; you don't need to submit it for
+   verification to use it yourself - Google will show an "unverified app"
+   warning during the one-time authorization step below, which is expected
+   and safe to click through for your own app/your own channel).
+4. **APIs & Services -> Credentials -> Create Credentials -> OAuth client
+   ID** -> Application type **Desktop app**. Download the resulting JSON.
+5. Save that file as `secrets/youtube_client_secret.json` (the default
+   `youtube.client_secret_path` - see `config.example.yaml`). The `secrets/`
+   directory is git-ignored (see `.gitignore`) - **never commit this file**.
+
+### Initial interactive authorization (once, by hand)
+
+The very first time YouTube publishing runs with no cached token yet,
+`wta_daily/youtube/auth.py` opens a real OAuth consent screen in a browser
+(`InstalledAppFlow.run_local_server`) and grants only the narrow
+`youtube.upload` scope. On a **headless Raspberry Pi over SSH**, the
+easiest way to do this one-time step is either:
+
+- Run the very first authorized call **from a machine with a browser** (a
+  laptop checkout of the same repo, same `secrets/youtube_client_secret.json`),
+  then copy the resulting `secrets/youtube_token.json` to the Pi; or
+- SSH into the Pi with local port forwarding
+  (`ssh -L 8080:localhost:8080 pi@<host>`) so the Pi-side `run_local_server`
+  callback reaches your laptop's browser.
+
+Either way, run one upload by hand first (see "Testing an upload" below) -
+that's what actually triggers this flow. Once it succeeds, you're done with
+this step permanently (until you revoke/rotate credentials).
+
+### Where the token lives, and how unattended refresh works
+
+The resulting OAuth token (including its long-lived refresh token) is
+cached at `secrets/youtube_token.json` (the default `youtube.token_path`) -
+also git-ignored, **never commit it either**. Every later call - including
+every unattended scheduled run on the Pi - loads this cached token and, if
+the short-lived access token has expired, silently refreshes it via
+`google.auth.transport.requests.Request()` and re-caches the result, with
+no browser and no human involved. If the refresh token itself is ever
+revoked (e.g. you revoke access in your Google Account settings), the next
+run raises a clear `YouTubeAuthError` explaining that the interactive
+authorization needs to be repeated - it never crashes with a bare
+stack trace, and it never logs the token/client-secret contents themselves
+(see "Logging" below).
+
+### Testing an upload as `private` or `unlisted`
+
+Set `youtube.privacy: unlisted` (the default) or `private` in
+`config.yaml` **before you ever enable this feature**, and only switch to
+`public` once you've confirmed a few uploads look right. To test the
+publishing step **on its own**, without spending any rankings/match/
+narration/video work or API calls:
+
+```bash
+pip install -r requirements-youtube.txt   # or: pip install -e ".[youtube]"
+
+# Generate a day's assets normally first (as many times as you like, with
+# youtube.enabled still false - nothing gets uploaded during this step):
+python -m wta_daily.cli --config config/config.yaml --date 2026-08-17
+
+# Then flip youtube.enabled: true in config.yaml, and publish that
+# already-generated output/2026-08-17/ folder on its own:
+python -m wta_daily.cli --config config/config.yaml --date 2026-08-17 --upload-youtube
+```
+
+`--upload-youtube` reloads the exact `report.json` already written for that
+date and calls `wta_daily.youtube.uploader.publish_report()` directly - it
+never constructs a `DailyPipeline`, so it can't re-fetch rankings, re-hit
+any match API, re-synthesize narration, or re-render video/graphics. It
+uses `output/<date>/video.mp4`, `thumbnail.png`, and
+`youtube_description.txt` exactly as they already are on disk.
+
+### Enabling automatic uploads
+
+Once you're satisfied with a few manual `--upload-youtube` tests, set
+`youtube.enabled: true` in `config.yaml` (leave `privacy` at `unlisted`
+until you're ready for `public`). From then on, every normal scheduled run
+(`python -m wta_daily.cli --config config/config.yaml`) publishes that
+day's video as the final step, automatically - see "Pipeline ordering"
+below for exactly when.
+
+### Duplicate-upload protection
+
+Every successful upload is recorded in `data/youtube-uploads.json` (see
+`wta_daily/persistence/youtube_upload_store.py` - the same
+write-to-temp-then-rename-atomically pattern as `rankings-history.json`),
+keyed by `(report_date, tour)`, storing the video ID, URL, title, and
+upload timestamp. Before uploading, `publish_report()` checks this file
+first; if that date was already published successfully, it logs:
+
+```text
+YouTube upload skipped: report for 2026-08-17 already uploaded as <video ID>
+```
+
+and returns without calling the YouTube API at all - this is what makes a
+re-triggered/duplicate scheduler run (or an accidental second manual run)
+for the same date safe by default.
+
+### Retrying a failed upload, or forcing a re-upload
+
+A failed upload (network error, expired/revoked credentials, quota
+exceeded, etc.) is **not** recorded as successful, so simply re-running
+`--upload-youtube` for that date retries it normally - no special flag
+needed, since only a *successful* upload is ever recorded.
+
+To deliberately re-publish a date that already succeeded (e.g. you
+re-rendered the video and want the new cut live), pass
+`--force-youtube-upload` alongside `--upload-youtube`:
+
+```bash
+python -m wta_daily.cli --config config/config.yaml --date 2026-08-17 --upload-youtube --force-youtube-upload
+```
+
+This uploads a **new** video (YouTube has no "replace the video file"
+endpoint via this API) and overwrites that date's record in
+`youtube-uploads.json` with the new video's ID/URL - it does not delete or
+unlist the previous upload for you.
+
+### Pipeline ordering and failure isolation
+
+Phase 3 always runs **last**, strictly after video assembly (Phase 2), and
+only ever *consumes* artifacts already produced by earlier phases - it
+never regenerates `video.mp4`, `thumbnail.png`, or
+`youtube_description.txt` itself:
+
+```text
+Phase 1: rankings/movement/matches -> report.json / script.txt / title.txt
+Phase 2: narration / graphics / video.mp4  (each independently optional)
+Phase 3: YouTube publishing               (optional, off by default, always last)
+```
+
+A YouTube failure is isolated exactly like every other optional phase's
+failure (see ["Error handling & logging"](#error-handling--logging)): it's
+appended to `report.json`'s `errors` list and logged clearly, but it never
+raises out of `DailyPipeline.run()`, never deletes/regenerates
+`video.mp4` or any other artifact, and never re-attempts the video upload
+just because a *separate* step (the thumbnail) failed:
+
+```text
+YouTube video upload: SUCCESS
+YouTube video ID: abc123
+Thumbnail upload: FAILED
+```
+
+is reported as a **successful** publish (the video is live) with a
+distinct thumbnail-specific error - `result.thumbnail_error` - rather than
+as an overall failure, and the successful video upload is still recorded
+for duplicate protection.
+
+### Logging
+
+```text
+YouTube publishing enabled
+Uploading video...
+Video uploaded successfully
+YouTube video ID: abc123
+YouTube URL: https://www.youtube.com/watch?v=abc123
+Uploading custom thumbnail...
+Thumbnail uploaded successfully
+```
+
+Client secrets, access tokens, refresh tokens, and authorization headers
+are **never** logged - `wta_daily/youtube/auth.py` only ever logs file
+paths and high-level status (see `tests/test_youtube_auth.py::test_get_credentials_never_logs_the_token_value`).
+While disabled, the only output is a single debug-level line
+(`YouTube publishing is disabled...`) - no warnings, since a missing
+credential file is completely expected and correct in the default state.
+
+### API-call impact
+
+**None to the WTA/tennis data sources.** Phase 3 makes exactly one YouTube
+Data API video-insert call plus (if a thumbnail was generated) one
+thumbnail-set call per successful publish - it never touches
+`RankingsProvider`/`MatchProvider` and isn't counted by
+`wta_daily.api_usage` (a separate, Google-specific quota - see
+"Dependencies" below for the packages this uses).
+
+### Dependencies
+
+The official `google-api-python-client` / `google-auth-oauthlib` /
+`google-auth-httplib2` packages - **never** Selenium, browser automation,
+or YouTube Studio scripting. Intentionally kept out of the base
+`requirements.txt` (unlike the plain-`requests`-based ElevenLabs/OpenAI
+integrations) since they're a real, additional install footprint that most
+installs - anyone leaving `youtube.enabled: false` - never need:
+
+```bash
+pip install -r requirements-youtube.txt
+# or:
+pip install -e ".[youtube]"
+```
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -877,10 +1120,12 @@ data, which is already enough for a clean broadcast look.
 
 Requires Python 3.11+ (see [Raspberry Pi deployment](#raspberry-pi-deployment)
 for why - short version: Python 3.9 is EOL and current Pillow already
-requires 3.10+). `ffmpeg` is only needed if you enable video assembly.
-For development on Windows via Cursor, any 3.11+ interpreter works fine;
-this is just for local dev - see the Raspberry Pi section for the
-production deployment steps (`deploy/bootstrap_pi.sh` etc.).
+requires 3.10+). `ffmpeg` is only needed if you enable video assembly, and
+`pip install -r requirements-youtube.txt` is only needed if you enable
+YouTube publishing (see ["YouTube publishing"](#youtube-publishing)) - both
+stay off by default. For development on Windows via Cursor, any 3.11+
+interpreter works fine; this is just for local dev - see the Raspberry Pi
+section for the production deployment steps (`deploy/bootstrap_pi.sh` etc.).
 
 ```bash
 python3 -m venv .venv
@@ -903,6 +1148,7 @@ A successful run produces, for the target date, everything Phase 1 promises:
 output/2026-08-09/
     report.json
     script.txt
+    title.txt
     leaderboard.png
     player_cards/
         01.png
@@ -951,6 +1197,9 @@ Everything tunable lives in one YAML file - see the fully-commented
 - `publishing.thumbnail_enabled` / `publishing.description_enabled` -
   YouTube thumbnail + description, both `true` by default (they cost no
   extra API calls - see ["YouTube publishing assets"](#youtube-publishing-assets)).
+- `youtube.enabled` - the actual Phase 3 upload to YouTube via the official
+  Data API v3; `false` by default. See ["YouTube publishing"](#youtube-publishing)
+  above for the one-time Google Cloud setup this needs before enabling it.
 
 **Secrets are never stored in the config file.** Each secret-consuming
 setting is a `..._env` field naming an *environment variable* (see
@@ -958,7 +1207,12 @@ setting is a `..._env` field naming an *environment variable* (see
 environment (a local `.env` file via `python-dotenv`, your shell, or your
 CI/scheduler's secret store) at run time. `wta_daily/config.py` raises a
 clear `ConfigurationError` if a feature is enabled but its key is missing -
-it never silently sends an empty key or hardcodes a placeholder.
+it never silently sends an empty key or hardcodes a placeholder. YouTube's
+OAuth credentials are the one exception to the "`..._env` variable" pattern
+- they're small JSON *files* (a client secret plus an auto-refreshing
+token), not a single bearer key, so `youtube.client_secret_path` /
+`youtube.token_path` name git-ignored file locations instead (see
+["YouTube publishing"](#youtube-publishing)).
 
 ## Folder structure
 
@@ -968,12 +1222,14 @@ wta-daily/
     data/
         rankings-history.json   # append-only daily snapshots, for movement comparison
         players.json             # small player_id -> {name, country_code} cache
+        youtube-uploads.json     # only if youtube.enabled was ever true - duplicate-upload protection
         sample/                   # offline fixtures used by tests/demos
         cache/                    # scratch space for provider-level caching
     output/
         2026-08-09/              # one self-contained folder per day
             report.json
             script.txt
+            title.txt               # canonical YouTube video title (wta_daily/title.py)
             narration.mp3          # Phase 2, only if voice.enabled
             narration_timing.json  # only if voice.enabled and ElevenLabs returned alignment
             leaderboard.png
@@ -982,6 +1238,7 @@ wta-daily/
             thumbnail.png          # 1280x720, on by default (publishing.thumbnail_enabled)
             youtube_description.txt  # on by default (publishing.description_enabled)
             video.mp4              # Phase 2, only if video.enabled
+    secrets/                  # YouTube OAuth client secret / cached token - git-ignored, see below
     config/
         config.example.yaml
     templates/               # reserved for future templated assets (intros, thumbnails)
@@ -1003,18 +1260,26 @@ CLI (wta_daily/cli.py)
        4. RankingsSnapshotStore.save_snapshot() wta_daily/persistence/snapshot_store.py
        5. DailyOutputStore.write_report()       wta_daily/persistence/report_store.py
        6. ScriptGenerator.generate()            <- plugin: script_registry
+          + wta_daily.title.generate_title()      (title.txt - one canonical, deterministic function)
        7. GraphicsRenderer.render_*()           <- plugin: graphics_registry
        8. [optional] VoiceSynthesizer.synthesize()  <- plugin: voice_registry
        9. [optional] VideoAssembler.assemble()      <- plugin: video_registry
-      10. [optional] git_automation.commit_and_push()
+      10. [optional, off by default] wta_daily.youtube.uploader.publish_report()  (Phase 3 - see below)
+      11. [optional] git_automation.commit_and_push()
 ```
 
-Every numbered step other than movement/persistence is a **plugin**: a small
-abstract base class in `wta_daily/plugins/base.py`
+Every numbered step other than movement/persistence/title/YouTube is a
+**plugin**: a small abstract base class in `wta_daily/plugins/base.py`
 (`RankingsProvider`, `MatchProvider`, `ScriptGenerator`, `GraphicsRenderer`,
 `VoiceSynthesizer`, `VideoAssembler`). Concrete implementations register
 themselves with a decorator against one of the registries in
-`wta_daily/plugins/registry.py`:
+`wta_daily/plugins/registry.py`. Step 10 (YouTube publishing) is
+deliberately **not** a plugin - like `wta_daily/git_automation.py`, there's
+exactly one real implementation (the official YouTube Data API v3) for this
+concern, so it's a single, optional, config-gated module rather than
+registry machinery; see ["YouTube publishing"](#youtube-publishing) for the
+full design (disabled-by-default guarantee, failure isolation, duplicate
+protection).
 
 ```python
 @rankings_registry.register("my_new_source")
@@ -1099,6 +1364,17 @@ it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
   endpoint shape change - `WtaOfficialMatchProvider` logs it and returns the
   match anyway with `match_date: null`; it never raises, and it never
   substitutes a tournament date as a "good enough" guess.
+- **A YouTube publishing failure (Phase 3) never touches any local
+  artifact.** `wta_daily.youtube.uploader.publish_report()` catches any
+  exception from the upload/thumbnail calls, records it on
+  `YouTubePublishResult` instead of raising, and `DailyPipeline` appends a
+  clear message to `report.json`'s `errors` - the already-generated
+  `video.mp4`, `thumbnail.png`, `youtube_description.txt`, and `report.json`
+  are never deleted or regenerated because of it. A thumbnail failure after
+  a successful video upload is reported as its own distinct error, not
+  merged into (or mistaken for) an overall failure. See ["YouTube
+  publishing"](#youtube-publishing) above and
+  `tests/test_youtube_uploader.py`.
 
 ## Scheduling
 
@@ -1181,6 +1457,16 @@ nano .env                        # add ELEVENLABS_API_KEY / OPENAI_API_KEY only 
 To pick up code changes later: `cd ~/wta-daily && git pull && bash deploy/bootstrap_pi.sh`
 (safe/idempotent - it reuses the existing venv and only installs what changed).
 
+If you also want YouTube publishing on the Pi (optional - see ["YouTube
+publishing"](#youtube-publishing) for the full setup): `.venv/bin/pip
+install -r requirements-youtube.txt`, place
+`secrets/youtube_client_secret.json` on the Pi, then run the one-time
+interactive authorization either via SSH port forwarding
+(`ssh -L 8080:localhost:8080 pi@<host>`) or by running it once on a
+machine with a browser and copying the resulting `secrets/youtube_token.json`
+over - both `secrets/*` files are git-ignored, so `git pull` never touches
+them.
+
 ### Scheduling it unattended (systemd, recommended)
 
 Uses a **user-level** systemd service/timer, so it runs under your own
@@ -1226,7 +1512,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 270 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 320 unit/integration tests cover models (including `DailyReport.match_target_date`
 and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
 math (including the "unknown" vs "new"
@@ -1281,9 +1567,23 @@ card and the 1280x720 thumbnail; and pipeline-level cases in
 `tests/test_pipeline_integration.py` for the featured card appearing
 across every featured-player scenario, being picked up by the real
 `FfmpegVideoAssembler` for its narration segment, and both publishing
-toggles) - all using the offline `sample` providers, synthetic in-test
-providers, or mocked HTTP/subprocess calls, so `pytest` never makes a real
-network call or shells out to a real `ffmpeg` process.
+toggles), and YouTube publishing/Phase 3 (`tests/test_title.py` - the exact
+title format across month/day/year-boundary/player-count cases;
+`tests/test_youtube_upload_store.py` - the duplicate-protection JSON store;
+`tests/test_youtube_uploader.py` - `publish_report`'s full orchestration
+with a mocked client (disabled short-circuit, successful upload +
+thumbnail, duplicate skip, `--force` re-upload, missing-video/upload/
+thumbnail failure isolation); `tests/test_youtube_auth.py` - OAuth
+token reuse/refresh/error-handling using real (offline) `Credentials`
+objects, skipped rather than failed if the optional Google packages aren't
+installed; new cases in `tests/test_config.py` and
+`tests/test_pipeline_integration.py` for `youtube.enabled`'s default-off
+guarantee, error-isolation into `report.json`, and an end-to-end run
+through the real `googleapiclient` `build()` call; and `tests/test_cli.py`
+for `--upload-youtube`/`--force-youtube-upload`) - all using the offline
+`sample` providers, synthetic in-test providers, or mocked HTTP/subprocess/
+YouTube-client calls, so `pytest` never makes a real network call, shells
+out to a real `ffmpeg` process, or talks to the real YouTube API.
 
 ```bash
 pytest              # unit + integration tests
@@ -1306,11 +1606,22 @@ folders, per-player error isolation, unit tests.
   track muxed in when present.
 - `git.auto_commit` / `git.auto_push` - daily commit of `output/<date>/` plus
   the updated `data/*.json` history files (`wta_daily/git_automation.py`).
-  **This never touches YouTube** - publishing remains a manual, human step.
+  **This never touches YouTube** - `git.auto_commit`/`git.auto_push` and
+  `youtube.enabled` are completely independent toggles.
 - Scheduling wiring (cron/Task Scheduler/GitHub Actions examples above).
+
+**Phase 3 (implemented, disabled by default - flip a config flag to try):**
+
+- `youtube.enabled: true` - publishes `video.mp4` to YouTube via the
+  official YouTube Data API v3, applying the canonical title (`title.txt`),
+  description, category, and configured privacy status, then the generated
+  thumbnail (`wta_daily/youtube/uploader.py`). Duplicate-upload-safe by
+  default (`data/youtube-uploads.json`); `--upload-youtube`/
+  `--force-youtube-upload` let you test or retry publishing on its own,
+  without re-running data collection/narration/video assembly. See
+  ["YouTube publishing"](#youtube-publishing) above for full setup.
 
 **Future modules** (each addable independently, per the plugin architecture
 above): ATP version, Top 25, tournament previews, head-to-head stats, player
 biographies, career milestones, injury reports, weather, historical ranking
-charts, automatic YouTube description generation, thumbnail generation,
-multi-language narration (Spanish, French, ...).
+charts, multi-language narration (Spanish, French, ...).

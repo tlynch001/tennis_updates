@@ -30,6 +30,15 @@ class DailyOutputStore:
         return self.root / "script.txt"
 
     @property
+    def title_path(self) -> Path:
+        """The canonical YouTube video title for this day (see
+        :mod:`wta_daily.title`) - a single plain-text line, so it can be
+        `cat`'d/read directly when publishing by hand, and reused verbatim
+        by :mod:`wta_daily.youtube.uploader` when Phase 3 is enabled."""
+
+        return self.root / "title.txt"
+
+    @property
     def leaderboard_path(self) -> Path:
         return self.root / "leaderboard.png"
 
@@ -115,6 +124,14 @@ class DailyOutputStore:
             if not description_text.endswith("\n"):
                 fh.write("\n")
         return self.youtube_description_path
+
+    def write_title(self, title_text: str) -> Path:
+        self.ensure_dirs()
+        with self.title_path.open("w", encoding="utf-8") as fh:
+            fh.write(title_text)
+            if not title_text.endswith("\n"):
+                fh.write("\n")
+        return self.title_path
 
     def player_card_path(self, rank: int) -> Path:
         return self.player_cards_dir / f"{rank:02d}.png"
