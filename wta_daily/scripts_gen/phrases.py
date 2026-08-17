@@ -20,6 +20,13 @@ CLOSERS: list[str] = [
     "That's today's Top {n} in the books. Stay tuned for more as the tour rolls on.",
 ]
 
+#: Used for every player story *except* the first one right after the
+#: introduction (see FIRST_STORY_CONNECTORS below for why that one is
+#: handled separately). Every phrase here presupposes - explicitly or
+#: implicitly - that at least one other player has already been covered
+#: this episode ("elsewhere", "meanwhile", "next up", "turning to", "now
+#: to" all imply a shift *from* something), which is exactly what makes
+#: them wrong for the very first story.
 CONNECTORS: list[str] = [
     "Moving to number {rank}, ",
     "At number {rank}, ",
@@ -30,6 +37,20 @@ CONNECTORS: list[str] = [
     "Turning to number {rank}, ",
     "",
 ]
+
+#: Used only for the first Top N player story, immediately after the
+#: introduction. Deliberately just the empty string: every phrase in
+#: CONNECTORS above implies a preceding story to transition "from" or
+#: "elsewhere" relative to, which doesn't exist yet at this point in the
+#: script - see the module docstring's production-incident note. This is
+#: intentionally not "Starting with the world number one..." or similar
+#: manufactured filler either; the player's own sentence already reads
+#: naturally as the first thing said, so nothing needs to be added before
+#: it. Kept as its own named pool (rather than special-casing an empty
+#: string inline) so the *reason* a caller reaches for it is obvious at
+#: the call site, and so a future contributor extending this list knows
+#: any addition must never presuppose a previous story.
+FIRST_STORY_CONNECTORS: list[str] = [""]
 
 MOVEMENT_UP: list[str] = [
     "climbs to world number {rank}",
