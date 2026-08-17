@@ -60,36 +60,55 @@ def _render(report: DailyReport, output_path: Path, graphics: GraphicsConfig) ->
     headline = f"{report.tour.upper()} TOP {n}"
     date_str = f"{report.report_date:%b} {report.report_date.day}, {report.report_date.year}".upper()
     tournament = most_relevant_tournament(report)
+    tournament_text = tournament.upper() if tournament else None
 
+    # Horizontal sizing is untouched: the headline is fit to the same
+    # width budget/starting size as before. The tournament line - whose
+    # length varies a lot more than the fixed-format headline/date - gets
+    # the same width-fitting treatment so a long name (or a wide accented
+    # one) never overflows the frame. Only the *vertical* rhythm between
+    # lines changes below.
+    max_text_width = width * 0.92
     headline_font = _fit_font_to_width(
-        draw, headline, theme.font_bold, width * 0.92, start_size=int(height * 0.26)
+        draw, headline, theme.font_bold, max_text_width, start_size=int(height * 0.26)
     )
     date_font = load_font(theme.font_bold, size=int(height * 0.11), bold=True)
-    tournament_font = load_font(theme.font_bold, size=int(height * 0.09), bold=True)
+    tournament_font = (
+        _fit_font_to_width(
+            draw, tournament_text, theme.font_bold, max_text_width, start_size=int(height * 0.09)
+        )
+        if tournament_text
+        else None
+    )
 
-    # Vertically stack the (2 or 3) lines centered as a block, rather than
-    # fixed y-offsets, so the layout looks balanced whether or not a
-    # tournament line is present.
-    line_gap = height * 0.035
+    # Two deliberately *different*, generous gaps rather than one uniform
+    # spacing - the headline is the dominant element and the date is
+    # secondary, so that break gets the most air; the date-to-tournament
+    # break (two secondary/tertiary lines) gets a bit less, but still
+    # clearly more than the old single 0.035 value ever gave either gap.
+    # This is what turns three tightly-stacked lines into a real visual
+    # hierarchy instead of one dense block - see the module docstring.
+    gap_after_headline = height * 0.09
+    gap_after_date = height * 0.065
+
     headline_bbox = draw.textbbox((0, 0), headline, font=headline_font)
     headline_h = headline_bbox[3] - headline_bbox[1]
     date_bbox = draw.textbbox((0, 0), date_str, font=date_font)
     date_h = date_bbox[3] - date_bbox[1]
 
-    block_h = headline_h + line_gap + date_h
-    if tournament:
-        tournament_text = tournament.upper()
+    block_h = headline_h + gap_after_headline + date_h
+    if tournament_text and tournament_font is not None:
         tournament_bbox = draw.textbbox((0, 0), tournament_text, font=tournament_font)
-        block_h += line_gap + (tournament_bbox[3] - tournament_bbox[1])
+        block_h += gap_after_date + (tournament_bbox[3] - tournament_bbox[1])
 
     top = (height - stripe_h - block_h) / 2
     cx = width / 2
 
     draw.text((cx, top), headline, font=headline_font, fill=text_color, anchor="ma")
-    top += headline_h + line_gap
+    top += headline_h + gap_after_headline
     draw.text((cx, top), date_str, font=date_font, fill=accent, anchor="ma")
-    top += date_h + line_gap
-    if tournament:
+    top += date_h + gap_after_date
+    if tournament_text and tournament_font is not None:
         draw.text((cx, top), tournament_text, font=tournament_font, fill=subtext_color, anchor="ma")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
