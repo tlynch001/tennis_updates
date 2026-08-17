@@ -403,7 +403,7 @@ class DailyPipeline:
         logger.info("Creating narration...")
         try:
             synthesizer = voice_registry.create(self._config.voice.provider, voice_config=self._config.voice)
-            synthesizer.synthesize(store.script_path, store.narration_path)
+            synthesizer.synthesize(store.script_path, store.narration_path, report=report)
             logger.info("Wrote %s", store.narration_path)
         except VoiceSynthesisError as exc:
             logger.error("Voice synthesis failed: %s", exc)

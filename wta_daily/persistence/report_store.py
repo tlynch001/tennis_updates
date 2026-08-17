@@ -42,6 +42,33 @@ class DailyOutputStore:
         return self.root / "narration.mp3"
 
     @property
+    def timing_path(self) -> Path:
+        """Optional per-segment narration timing metadata, written by a
+        voice synthesizer that can derive it (see
+        :mod:`wta_daily.voice.narration_timing`) and consumed by
+        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler` to
+        size video slides against actual spoken duration. May not exist -
+        every consumer must treat that as "fall back to fixed durations",
+        never as an error.
+        """
+
+        return self.root / "narration_timing.json"
+
+    @property
+    def featured_card_path(self) -> Path:
+        """Optional dedicated visual for the featured-player segment (see
+        :class:`~wta_daily.config.FeaturedPlayerConfig`). No renderer
+        currently produces this file - graphics for the featured player
+        are out of scope for now (see the README) - but
+        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler`
+        checks for it first and falls back to the leaderboard when it's
+        absent, so a future graphics addition can drop a PNG here with no
+        further code changes.
+        """
+
+        return self.root / "featured_player.png"
+
+    @property
     def video_path(self) -> Path:
         return self.root / "video.mp4"
 

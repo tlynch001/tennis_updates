@@ -28,6 +28,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 - [Data source research & recommendation](#data-source-research--recommendation)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
+- [Slide timing synchronization](#slide-timing-synchronization)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -562,6 +563,177 @@ Graphics were deliberately left untouched for this feature (the official
 leaderboard stays the official leaderboard) - the priority here was data
 correctness and narration, per the feature's own scope.
 
+## Slide timing synchronization
+
+Before this, `FfmpegVideoAssembler` used fixed slide durations (a fixed
+intro, `video.seconds_per_player_card` for every player) regardless of how
+much the narrator actually said about each one, so cuts happened at
+arbitrary points relative to the spoken narration. Slides are now sized to
+match the actual spoken narration whenever timing data is available,
+falling back to the original fixed-duration behavior otherwise.
+
+### 1-2. Options found, and whether ElevenLabs provides usable timing
+
+ElevenLabs' text-to-speech API has a dedicated endpoint for exactly this:
+`POST /v1/text-to-speech/{voice_id}/with-timestamps` (and a streaming
+variant) - **the same generation as the standard endpoint**, just
+returning character-level `alignment` (per-character start/end times in
+seconds) alongside the base64-encoded audio in one JSON response, instead
+of raw audio bytes. It accepts the exact same request body (`text`,
+`model_id`, `voice_settings`, ...) as the plain endpoint and works with the
+model this project already uses - nothing about it is restricted to a
+higher plan tier, so switching to it doesn't cost anything the plain
+endpoint didn't already cost.
+
+### 3. Approaches compared
+
+| # | Approach | Sync accuracy | ElevenLabs calls | Credit usage | Complexity | Reliability | Debuggability | Voice consistency |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | **ElevenLabs alignment from the one existing TTS request** (switch to `.../with-timestamps`) | High - real per-character timing for the exact audio being played | **Same as today (1 call)** | **Same as today** | Low-moderate (map script paragraphs to alignment offsets) | High - one request, one source of truth | High (see `narration_timing.json` below) | Unaffected - identical audio, one voice, one take |
+| 2 | Synthesize each player's paragraph as a **separate** TTS request, use each clip's real duration | High | **~11-12x today's calls** for a Top 10 + featured segment | ~11-12x - real money/quota cost for a daily job | Moderate (stitch N audio clips instead of 1) | Lower - N requests means N chances to fail, and stitched clips can have audible seams | Moderate | **At risk** - separate generations of the same voice can vary subtly in pacing/pitch between segments |
+| 3 | **Estimate timings from text length/word count** (no ElevenLabs data at all) | Low-moderate - real speech rate varies with punctuation, emphasis, and the words themselves, so this only approximates | 0 extra | 0 extra | Low | High (no network dependency) | Low (no ground truth to compare against) | Unaffected |
+| 4 | (This project's choice) **#1** | High | Same as today | Same as today | Low-moderate | High | High | Unaffected |
+
+Approach 2 was ruled out specifically because the task calls for avoiding
+unnecessary ElevenLabs calls/credit usage - it multiplies both for a
+purely mechanical benefit (exact per-clip duration) that approach 1
+already provides for free. Approach 3 was kept in mind as the *fallback*
+this project already needed anyway (for when narration is disabled, or
+ElevenLabs doesn't return alignment for some reason) - see below - but not
+as the primary mechanism, since real timing metadata should be preferred
+over estimation whenever it's available.
+
+### 4. API-call / credit impact
+
+**Zero.** `ElevenLabsVoiceSynthesizer.synthesize` already made exactly one
+`POST` per run; it now points at `.../with-timestamps` instead of the
+plain endpoint for that same one call, and decodes `audio_base64` instead
+of reading a raw byte stream - otherwise unchanged (same `text`,
+`model_id`, and `voice_settings` as before).
+
+### 5-6. What changed, and how slide timings are determined
+
+- **`wta_daily/voice/narration_timing.py`** (new): given a `DailyReport`,
+  the exact `script.txt` text, and ElevenLabs' character alignment, derives
+  one `NarrationSegment` per visual:
+  1. Splits `script.txt` into its blank-line-separated paragraphs (the
+     same structure both `TemplateScriptGenerator` and the `openai`
+     generator's system prompt already produce: an intro, one paragraph
+     per Top N player in rank order, optionally the featured-player
+     segment, then a single closing sign-off).
+  2. Matches each middle paragraph to the next expected player (by
+     rank order) or the featured player (checking whether her name
+     appears in it) - a paragraph that matches nobody (e.g. the template
+     generator's length-padding filler sentence) extends the *previous*
+     matched segment instead of becoming its own cut.
+  3. Looks up each paragraph's start/end time directly in the alignment
+     (which is for `script.txt`'s own characters, since nothing
+     transforms the text before it's sent to ElevenLabs).
+  4. Extends the final (sign-off) segment to the alignment's true last
+     character end-time, so the silent video's total length is never
+     shorter than the actual narration - see `FfmpegVideoAssembler`'s
+     docstring for why a short silent video would otherwise truncate the
+     audio via ffmpeg's `-shortest` mux flag.
+  Writes the result to **`narration_timing.json`** (see below) - useful on
+  its own for debugging, and is what decouples "how do we interpret
+  alignment data" from "how do we build a video", so a future non-FFmpeg
+  video assembler could reuse the same file.
+- **`wta_daily/voice/elevenlabs_provider.py`**: uses the
+  `.../with-timestamps` endpoint; `synthesize()` gained an optional
+  `report` parameter (see `VoiceSynthesizer.synthesize`'s updated
+  signature in `wta_daily/plugins/base.py`) so it can compute and write
+  `narration_timing.json` as a byproduct - any failure while doing so is
+  caught and logged, never raised, since timing metadata is a quality
+  improvement, not a requirement for narration to succeed.
+- **`wta_daily/video/ffmpeg_assembler.py`**: reads `narration_timing.json`
+  (via `DailyOutputStore.timing_path`) if it exists and is usable; builds
+  one slide per segment (leaderboard for intro/closer, each player's card
+  for her segment, `DailyOutputStore.featured_card_path` for the featured
+  segment *if that file exists*, else the leaderboard - no dedicated
+  featured-player graphic is generated by this change, matching the
+  featured-player feature's own explicit "graphics are out of scope for
+  now" decision, but the lookup is already wired up for whenever one is
+  added). A missing player card falls back to the leaderboard for that
+  specific segment rather than skipping it (keeps every later cut point
+  aligned with the narration); consecutive slides that end up showing the
+  identical image (e.g. two leaderboard fallbacks in a row) are merged
+  into one longer slide rather than an unnecessary hard cut to the same
+  picture. If no usable timing file exists at all (narration disabled, or
+  ElevenLabs didn't return alignment), this falls back to exactly the
+  previous fixed-duration behavior, including a new fixed-duration slide
+  for the featured player (previously not handled in that fallback path).
+- **`wta_daily/persistence/report_store.py`**: `DailyOutputStore` gained
+  `timing_path` (`narration_timing.json`) and `featured_card_path`
+  (`featured_player.png`, currently never produced by any renderer)
+  properties.
+
+**Sample timing breakdown** (real Top 10 + Emma Navarro data, August 16,
+2026 run - narration simulated at a fixed ~150-words-per-minute character
+rate for this demonstration since no ElevenLabs credentials were available
+in this environment; the *mechanism* - script parsing, paragraph matching,
+segment derivation - is exactly what runs against a real alignment
+response):
+
+```text
+Kind      Label                          Start     End  Duration
+intro     intro                           0.00    4.40      4.40
+player    Aryna Sabalenka                 4.47   10.67      6.20   (no match)
+player    Elena Rybakina                 10.67   22.08     11.41   (no match + points-gap sentence)
+player    Jessica Pegula                 22.08   32.35     10.27   (won 6-3,6-2)
+player    Coco Gauff                     32.35   39.09      6.74   (no match)
+player    Iga Swiatek                    39.09   47.56      8.47   (no match)
+player    Mirra Andreeva                 47.56   58.43     10.87   (no match + points-gap sentence)
+player    Karolina Muchova               58.43   69.30     10.87   (no match + points-gap sentence)
+player    Linda Noskova                  69.30   83.31     14.01   (won 6-3,6-3 + points-gap sentence)
+player    Elina Svitolina                83.31   92.71      9.40   (no match + points-gap sentence)
+player    Amanda Anisimova               92.71  117.26     24.55   (won 6-2,6-3 + points-gap + filler)
+featured  Emma Navarro                  117.26  137.14     19.88   (won 3-6,6-4,6-2)
+closer    closer                        137.14  144.01      6.87
+```
+
+Note the variation this produces automatically - Sabalenka's simple "did
+not play" blurb (6.2s) versus Anisimova's match-result-plus-points-gap
+paragraph, which also absorbed the length-padding filler sentence
+(24.55s) - **never a uniform division of the total**, exactly per the
+task's explicit requirement.
+
+This was verified against a **real** rendered video: the simulated
+alignment above drove a real silent track of the same total duration
+through `ffmpeg`, and extracting a video frame partway into each segment
+and perceptually hashing it against every source PNG confirmed an exact
+match for the leaderboard (intro/closer) and every player card checked -
+i.e. slide transitions really do land inside their intended narration
+segment, not just in the timing math. Final `video.mp4` duration (~144.0s)
+matched the simulated `narration.mp3` (~144.0s) to within a single video
+frame, with a full audio track and no perceptible blank tail.
+
+### 7. Remaining limitations
+
+- **Paragraph-to-player matching is structural, not guaranteed by a formal
+  contract.** It relies on the convention (true for both shipped script
+  generators today) that paragraphs appear in rank order, one per player,
+  with the featured player (if any) last. A future script generator that
+  breaks this convention (e.g. combines two players into one paragraph)
+  would silently fall back to "no usable timing" for that run (an empty
+  segment list - `compute_segment_timings` never mismatches players, it
+  just gives up cleanly) rather than mis-synchronizing.
+- **No dedicated featured-player visual exists yet** - the lookup for one
+  (`DailyOutputStore.featured_card_path`) is wired up, but until a future
+  graphics change actually renders that file, her segment always shows the
+  leaderboard, per the task's own "otherwise use the leaderboard" fallback
+  guidance.
+- **Not frame-perfect lip-sync** - by design, per the task's own scope
+  ("we do not need frame-perfect lip-sync... slide changes correspond
+  naturally to the spoken sections"). Character-level alignment is
+  precise, but paragraph-boundary matching (not word-level matching within
+  a paragraph) is the unit of granularity for slide changes.
+- **Verified live using a simulated alignment**, not a real ElevenLabs
+  response, since no ElevenLabs API credentials were available in this
+  environment - the request/response shapes and decoding match
+  ElevenLabs' documented `with-timestamps` contract exactly (see
+  `tests/test_elevenlabs_provider.py`), but a first real run against a
+  live account is worth spot-checking once credentials are available.
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -940,7 +1112,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 210 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 240 unit/integration tests cover models (including `DailyReport.match_target_date`
 and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
 math (including the "unknown" vs "new"
@@ -979,9 +1151,16 @@ per-player-failure-isolation scenario, the "rankings fetched exactly once
 per run, wider pool exposed for reuse" behavior, and the featured player's
 every outside-Top-N/moving-toward-Top-N/steady/moving-down/win/loss/no-match/
 match-unavailable/entered-Top-N/reached-No.-1/lookup-failure-isolated
-scenario in `tests/test_pipeline_integration.py`) - all using the offline
-`sample` providers, synthetic in-test providers, or mocked HTTP responses,
-so `pytest` never makes a real network call.
+scenario in `tests/test_pipeline_integration.py`), and the slide-timing
+synchronization work (`tests/test_narration_timing.py` - paragraph
+matching, featured-player and filler-paragraph handling, malformed-input
+fallback; `tests/test_elevenlabs_provider.py` - the with-timestamps
+endpoint and narration-timing byproduct; `tests/test_ffmpeg_assembler.py`
+- timing-based vs. fixed-duration slide selection, missing-card and
+missing-featured-visual fallback, and video assembly succeeding both with
+and without narration) - all using the offline `sample` providers,
+synthetic in-test providers, or mocked HTTP/subprocess calls, so `pytest`
+never makes a real network call or shells out to a real `ffmpeg` process.
 
 ```bash
 pytest              # unit + integration tests
