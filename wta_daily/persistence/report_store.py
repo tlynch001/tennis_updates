@@ -70,6 +70,20 @@ class DailyOutputStore:
         return self.root / "featured_player.png"
 
     @property
+    def thumbnail_path(self) -> Path:
+        """The YouTube thumbnail (1280x720 - see
+        :mod:`wta_daily.graphics.thumbnail`)."""
+
+        return self.root / "thumbnail.png"
+
+    @property
+    def youtube_description_path(self) -> Path:
+        """The plain-text YouTube description (see
+        :mod:`wta_daily.youtube_description`)."""
+
+        return self.root / "youtube_description.txt"
+
+    @property
     def video_path(self) -> Path:
         return self.root / "video.mp4"
 
@@ -93,6 +107,14 @@ class DailyOutputStore:
             if not script_text.endswith("\n"):
                 fh.write("\n")
         return self.script_path
+
+    def write_youtube_description(self, description_text: str) -> Path:
+        self.ensure_dirs()
+        with self.youtube_description_path.open("w", encoding="utf-8") as fh:
+            fh.write(description_text)
+            if not description_text.endswith("\n"):
+                fh.write("\n")
+        return self.youtube_description_path
 
     def player_card_path(self, rank: int) -> Path:
         return self.player_cards_dir / f"{rank:02d}.png"

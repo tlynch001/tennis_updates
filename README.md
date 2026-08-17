@@ -29,6 +29,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
 - [Slide timing synchronization](#slide-timing-synchronization)
+- [YouTube publishing assets](#youtube-publishing-assets)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -734,6 +735,112 @@ frame, with a full audio track and no perceptible blank tail.
   `tests/test_elevenlabs_provider.py`), but a first real run against a
   live account is worth spot-checking once credentials are available.
 
+## YouTube publishing assets
+
+Three artifacts a human would otherwise assemble by hand when uploading the
+day's video - all built purely from the same validated `DailyReport`
+already produced for `report.json`/narration, so none of them cost an
+extra external API call. On by default (`publishing.thumbnail_enabled` /
+`publishing.description_enabled`, both `true`); the featured-player card
+has no separate toggle - it follows `featured_player.enabled` directly
+(see below).
+
+### Featured-player card (`output/<date>/featured_player.png`)
+
+The narration already had a closing featured-player segment (see
+["Featured player"](#featured-player-recurring-editorial-segment)), but
+the video had no matching visual for it - the previous slide just stayed
+on screen for however long that segment happened to run. `wta_daily/graphics/featured_card.py`
+renders a dedicated card, reusing the exact building blocks
+`wta_daily/graphics/player_card.py` uses (fonts, theme colors, flag
+rendering, the shared `movement_headline_text` helper extracted from that
+module into `wta_daily/graphics/utils.py`, and the same "YESTERDAY'S
+MATCH" panel layout) so it reads as part of the same show - with one
+deliberate difference: instead of a giant `#{rank}` headline, it leads
+with a filled "FEATURED PLAYER" pill, so it's unmistakably a bonus segment
+rather than an eleventh Top N entry, even at a glance.
+
+Nothing about this is Emma-specific - the player comes from
+`report.featured_player` (itself built from `FeaturedPlayerConfig`, see
+that section above), never hard-coded. Every fact shown (rank, points,
+movement, match result) comes straight off that model; if her rank
+couldn't be resolved this run, the card is simply **not rendered** at all
+(there's no honest visual to draw without at least a rank) rather than
+showing a blank or fabricated one - the pipeline logs this and moves on,
+exactly like every other featured-player failure mode.
+
+**Video integration**: this reuses the exact mechanism already built for
+slide-timing synchronization (see ["Slide timing
+synchronization"](#slide-timing-synchronization)) - `FfmpegVideoAssembler`
+already checked for a file at `DailyOutputStore.featured_card_path` and
+fell back to the leaderboard when it didn't exist, specifically so that a
+future graphics addition could "drop a PNG here with no further code
+changes." That's exactly what this is: no changes to
+`wta_daily/video/ffmpeg_assembler.py` or
+`wta_daily/voice/narration_timing.py` were needed at all. The card shows
+for exactly the real, alignment-derived duration of her narration segment,
+and this keeps working unchanged if the configured featured player
+changes, since the whole path is keyed off the `featured` segment kind and
+a fixed filename convention - never a hard-coded name.
+
+### YouTube thumbnail (`output/<date>/thumbnail.png`, 1280x720)
+
+`wta_daily/graphics/thumbnail.py` renders a deliberately much simpler,
+bolder graphic than the leaderboard - 2-3 huge lines of text ("WTA TOP
+{n}", the date, and the tournament if one is confirmed) on a plain
+background, sized to read at YouTube-feed thumbnail size. Reuses the
+project's theme colors/fonts, but is a fixed 1280x720 canvas independent
+of `graphics.width`/`height` (which size the much larger leaderboard/card
+images). The headline font shrinks automatically if a longer tour name or
+larger `top_n` (e.g. "TOP 25") would otherwise overflow the frame.
+
+The tournament line uses `wta_daily.tournament_context.most_relevant_tournament`
+(see below) and is simply omitted - not guessed - on a day with no
+reliable signal. The featured player is deliberately **never** added to
+the thumbnail just because one is configured - the thumbnail represents
+the actual daily Top N video, and the ten numbered rankings rows/stats
+that don't belong on it stay off it too, per the brief's own "avoid
+overcrowding" and "don't add the featured player merely because one is
+configured" guidance.
+
+### YouTube description (`output/<date>/youtube_description.txt`)
+
+`wta_daily/youtube_description.py` is a small pure function (not a
+plugin - there's exactly one sensible way to do this today, so this
+skips the registry machinery used for genuinely interchangeable
+concerns) that builds a plain-text description: a dated headline, one
+sentence naming the tournament (again via `most_relevant_tournament`,
+omitted the same way if there's no reliable signal), the numbered Top N
+list straight from `report.players`, an optional "Featured Player" blurb
+(only when a featured player is configured *and* her rank was resolved
+this run - one factual sentence built only from fields that are actually
+populated, e.g. her real rank and, if she played, the real opponent/score/
+tournament), and a generic closing line. No fake URLs, handles, sponsors,
+or calls to action - none are configured anywhere in this project, so none
+appear.
+
+### `most_relevant_tournament` (`wta_daily/tournament_context.py`)
+
+Both the thumbnail and the description need to answer "what tournament is
+this update about" - answered once, in one shared function, from data
+*already fetched* for the day's report: the tournament name most of
+`report.players[*].match.tournament` (plus the featured player's match, if
+any) agree on. No hard-coded tournament calendar, no extra lookup - a day
+where nobody in the tracked group played returns `None`, and both callers
+handle that by omitting the tournament reference rather than reusing a
+stale one or guessing.
+
+### API-call impact
+
+**None.** All three artifacts are generated from the `DailyReport` object
+already in memory by the time graphics rendering runs - no new
+`RankingsProvider`/`MatchProvider` calls anywhere in this feature.
+Verified live: the `wta_daily.api_usage` summary (see ["Understanding &
+optimizing API usage"](#understanding--optimizing-api-usage)) reported the
+exact same call counts (2 rankings, 26 tournament discovery, 1 match
+results = 29 total, for a run with the featured player enabled) before
+and after adding these three artifacts.
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -841,6 +948,9 @@ Everything tunable lives in one YAML file - see the fully-commented
 - `graphics.theme` - all colors, plus optional custom font paths.
 - `voice` / `video` / `git` - Phase 2 features, all `enabled: false` by
   default.
+- `publishing.thumbnail_enabled` / `publishing.description_enabled` -
+  YouTube thumbnail + description, both `true` by default (they cost no
+  extra API calls - see ["YouTube publishing assets"](#youtube-publishing-assets)).
 
 **Secrets are never stored in the config file.** Each secret-consuming
 setting is a `..._env` field naming an *environment variable* (see
@@ -864,9 +974,13 @@ wta-daily/
         2026-08-09/              # one self-contained folder per day
             report.json
             script.txt
-            narration.mp3         # Phase 2, only if voice.enabled
+            narration.mp3          # Phase 2, only if voice.enabled
+            narration_timing.json  # only if voice.enabled and ElevenLabs returned alignment
             leaderboard.png
             player_cards/
+            featured_player.png    # only if featured_player.enabled and her rank resolved
+            thumbnail.png          # 1280x720, on by default (publishing.thumbnail_enabled)
+            youtube_description.txt  # on by default (publishing.description_enabled)
             video.mp4              # Phase 2, only if video.enabled
     config/
         config.example.yaml
@@ -1112,7 +1226,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 240 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 270 unit/integration tests cover models (including `DailyReport.match_target_date`
 and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
 math (including the "unknown" vs "new"
@@ -1158,9 +1272,18 @@ fallback; `tests/test_elevenlabs_provider.py` - the with-timestamps
 endpoint and narration-timing byproduct; `tests/test_ffmpeg_assembler.py`
 - timing-based vs. fixed-duration slide selection, missing-card and
 missing-featured-visual fallback, and video assembly succeeding both with
-and without narration) - all using the offline `sample` providers,
-synthetic in-test providers, or mocked HTTP/subprocess calls, so `pytest`
-never makes a real network call or shells out to a real `ffmpeg` process.
+and without narration), and the YouTube publishing assets
+(`tests/test_tournament_context.py` - relevant-tournament inference
+including ties and no-signal days; `tests/test_youtube_description.py` -
+date/Top-N/tournament/featured-player content, no fabricated data, no
+URLs/handles/CTAs; new cases in `tests/test_graphics.py` for the featured
+card and the 1280x720 thumbnail; and pipeline-level cases in
+`tests/test_pipeline_integration.py` for the featured card appearing
+across every featured-player scenario, being picked up by the real
+`FfmpegVideoAssembler` for its narration segment, and both publishing
+toggles) - all using the offline `sample` providers, synthetic in-test
+providers, or mocked HTTP/subprocess calls, so `pytest` never makes a real
+network call or shells out to a real `ffmpeg` process.
 
 ```bash
 pytest              # unit + integration tests

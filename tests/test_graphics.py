@@ -9,6 +9,7 @@ from wta_daily.config import GraphicsConfig
 from wta_daily.graphics.featured_card import render_featured_card
 from wta_daily.graphics.leaderboard import render_leaderboard
 from wta_daily.graphics.player_card import render_player_card
+from wta_daily.graphics.thumbnail import THUMBNAIL_HEIGHT, THUMBNAIL_WIDTH, render_thumbnail
 from wta_daily.models import DailyReport, FeaturedPlayerReport, MatchResult, Movement, PlayerReport
 
 
@@ -225,3 +226,55 @@ def test_render_featured_card_handles_player_inside_top_n(tmp_path: Path) -> Non
     render_featured_card(featured, output_path, config, top_n=10)
 
     assert output_path.exists()
+
+
+# --- YouTube thumbnail ---------------------------------------------------------
+
+
+def test_render_thumbnail_is_exactly_1280x720(tmp_path: Path) -> None:
+    output_path = tmp_path / "thumbnail.png"
+
+    result_path = render_thumbnail(_report(), output_path, GraphicsConfig())
+
+    assert result_path == output_path
+    with Image.open(output_path) as img:
+        assert img.size == (1280, 720)
+        assert img.size == (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)
+
+
+def test_render_thumbnail_is_independent_of_graphics_config_dimensions(tmp_path: Path) -> None:
+    """The thumbnail is always 1280x720 regardless of the leaderboard/card
+    canvas size configured for the rest of the graphics."""
+
+    output_path = tmp_path / "thumbnail.png"
+
+    render_thumbnail(_report(), output_path, GraphicsConfig(width=640, height=360))
+
+    with Image.open(output_path) as img:
+        assert img.size == (1280, 720)
+
+
+def test_render_thumbnail_works_without_reliable_tournament_data(tmp_path: Path) -> None:
+    """No player has a confirmed match - the thumbnail must still render,
+    simply without a tournament line, rather than guessing one."""
+
+    players = [
+        PlayerReport(
+            rank=i,
+            name=f"Player {i}",
+            player_id=f"p{i}",
+            country_code="USA",
+            points=1000 - i,
+            movement=Movement.SAME,
+            match=None,
+        )
+        for i in range(1, 11)
+    ]
+    report = DailyReport(report_date=date(2026, 8, 16), tour="wta", players=players)
+    output_path = tmp_path / "thumbnail.png"
+
+    render_thumbnail(report, output_path, GraphicsConfig())
+
+    assert output_path.exists()
+    with Image.open(output_path) as img:
+        assert img.size == (1280, 720)

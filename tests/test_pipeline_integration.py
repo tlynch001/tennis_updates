@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
 from wta_daily.config import AppConfig, FeaturedPlayerConfig, GraphicsConfig, ProviderConfig
-from wta_daily.models import MatchLookupResult, MatchResult, Movement, PlayerRanking
+from wta_daily.models import DailyReport, MatchLookupResult, MatchResult, Movement, PlayerRanking
+from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.pipeline import DailyPipeline
 from wta_daily.plugins.base import MatchProvider, RankingsProvider
 from wta_daily.plugins.matches.sample import SampleMatchProvider  # noqa: F401 - registers plugin
 from wta_daily.plugins.rankings.sample import SampleRankingsProvider
 from wta_daily.plugins.registry import matches_registry, rankings_registry
+from wta_daily.video.ffmpeg_assembler import FfmpegVideoAssembler
+from wta_daily.voice.narration_timing import NarrationSegment
 
 from .conftest import SAMPLE_MATCHES_FIXTURE, SAMPLE_RANKINGS_FIXTURE
 
@@ -42,6 +46,11 @@ def test_pipeline_run_produces_all_phase1_artifacts(tmp_path: Path) -> None:
     assert (output_dir / "leaderboard.png").exists()
     for player in report.players:
         assert (output_dir / "player_cards" / f"{player.rank:02d}.png").exists()
+
+    # New artifacts, on by default, with no featured player configured.
+    assert (output_dir / "thumbnail.png").exists()
+    assert (output_dir / "youtube_description.txt").exists()
+    assert not (output_dir / "featured_player.png").exists()
 
     assert (config.data_dir / "rankings-history.json").exists()
     assert (config.data_dir / "players.json").exists()
@@ -384,6 +393,20 @@ def test_featured_player_outside_top_n(tmp_path: Path) -> None:
     assert all(p.player_id != EMMA_ID for p in report.players)
 
 
+def test_featured_player_outside_top_n_renders_a_featured_card(tmp_path: Path) -> None:
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider()
+
+    pipeline.run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert (output_dir / "featured_player.png").exists()
+    # She's not officially in the Top 10 - no eleventh numbered card.
+    assert not (output_dir / "player_cards" / "11.png").exists()
+
+
 def test_featured_player_movement_toward_top_n(tmp_path: Path) -> None:
     pipeline, _ = _run_with_featured_player(tmp_path, emma_rank=30, report_date=date(2026, 8, 8))
     # Second run: she's climbed from 30 to 22.
@@ -490,6 +513,24 @@ def test_featured_player_entering_top_n(tmp_path: Path) -> None:
     assert report.featured_player.match == win
 
 
+def test_featured_player_entering_top_n_still_renders_featured_card(tmp_path: Path) -> None:
+    """Even when she's genuinely inside the Top N (and therefore already
+    has a numbered player card), the dedicated featured-player visual is
+    still produced - the two are complementary, not exclusive."""
+
+    win = _emma_match(won=True)
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(8))
+    pipeline._match_provider = _SyntheticMatchProvider(matches={EMMA_ID: win})
+
+    pipeline.run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert (output_dir / "featured_player.png").exists()
+    assert (output_dir / "player_cards" / "08.png").exists()
+
+
 def test_featured_player_reaching_number_one(tmp_path: Path) -> None:
     _, report = _run_with_featured_player(tmp_path, emma_rank=1)
 
@@ -512,6 +553,24 @@ def test_featured_player_not_found_anywhere_does_not_break_top_n(tmp_path: Path)
     assert report.featured_player.rank is None
     assert report.featured_player.rank_error is not None
     assert report.errors  # surfaced for operator visibility, but non-fatal
+
+
+def test_featured_player_not_found_anywhere_does_not_render_featured_card(tmp_path: Path) -> None:
+    """No rank means nothing honest to draw - the card must simply be
+    skipped, not rendered with a fabricated/blank rank."""
+
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(None))
+    pipeline._match_provider = _SyntheticMatchProvider()
+
+    pipeline.run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert not (output_dir / "featured_player.png").exists()
+    # The rest of the run still succeeded normally.
+    assert (output_dir / "thumbnail.png").exists()
+    assert (output_dir / "youtube_description.txt").exists()
 
 
 def test_featured_player_fallback_fetch_failure_is_isolated_from_a_healthy_top_n(
@@ -562,6 +621,11 @@ def test_featured_player_disabled_produces_no_featured_player_field(tmp_path: Pa
     report = DailyPipeline(config).run(date(2026, 8, 9))
 
     assert report.featured_player is None
+    output_dir = config.output_dir / "2026-08-09"
+    assert not (output_dir / "featured_player.png").exists()
+    # The rest of the run is unaffected by the feature being off.
+    assert (output_dir / "thumbnail.png").exists()
+    assert (output_dir / "youtube_description.txt").exists()
 
 
 def test_featured_player_segment_appears_after_top_n_and_before_sign_off_end_to_end(
@@ -588,3 +652,75 @@ def test_featured_player_segment_appears_after_top_n_and_before_sign_off_end_to_
         if EMMA_NAME in paragraph:
             continue
         assert i < emma_index
+
+
+# --- Featured card in the synchronized video sequence ------------------------
+
+
+def test_featured_card_is_used_in_the_synchronized_video_sequence(tmp_path: Path) -> None:
+    """End-to-end plumbing check: the featured card the pipeline renders is
+    exactly the file FfmpegVideoAssembler picks up for the 'featured'
+    narration segment - not a coincidence of matching filenames, but the
+    actual DailyOutputStore.featured_card_path convention both sides share.
+    """
+
+    win = _emma_match(won=True)
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider(matches={EMMA_ID: win})
+
+    pipeline.run(date(2026, 8, 9))
+
+    store = DailyOutputStore(config.output_dir, date(2026, 8, 9))
+    assert store.featured_card_path.exists()
+
+    assembler = FfmpegVideoAssembler(config.video)
+    segment = NarrationSegment(
+        kind="featured", label=EMMA_NAME, start_seconds=10.0, end_seconds=20.0
+    )
+    report = DailyReport.from_dict(json.loads(store.report_path.read_text()))
+    chosen_image = assembler._image_for_segment(segment, report, store)
+
+    assert chosen_image == store.featured_card_path
+
+
+def test_thumbnail_can_be_disabled_via_config(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config.publishing.thumbnail_enabled = False
+
+    DailyPipeline(config).run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert not (output_dir / "thumbnail.png").exists()
+    assert (output_dir / "youtube_description.txt").exists()
+
+
+def test_description_can_be_disabled_via_config(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config.publishing.description_enabled = False
+
+    DailyPipeline(config).run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert (output_dir / "thumbnail.png").exists()
+    assert not (output_dir / "youtube_description.txt").exists()
+
+
+def test_missing_tournament_data_does_not_crash_the_run(tmp_path: Path) -> None:
+    """A day where nobody in the tracked group (or the featured player)
+    played must still produce a complete, successful run - the thumbnail
+    and description simply omit the tournament reference."""
+
+    config = _make_featured_config(tmp_path, top_n=10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    pipeline._match_provider = _SyntheticMatchProvider(matches={})  # nobody played
+
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert report.errors == []
+    output_dir = config.output_dir / "2026-08-09"
+    assert (output_dir / "thumbnail.png").exists()
+    description = (output_dir / "youtube_description.txt").read_text()
+    assert "None" not in description

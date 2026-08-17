@@ -42,6 +42,7 @@ from wta_daily.plugins.registry import (
     video_registry,
     voice_registry,
 )
+from wta_daily.youtube_description import generate_description
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,10 @@ class DailyPipeline:
         logger.info("Generating graphics...")
         self._render_graphics(report, store)
         self._render_featured_card(report, store)
+        if self._config.publishing.thumbnail_enabled:
+            self._generate_thumbnail(report, store)
+        if self._config.publishing.description_enabled:
+            self._generate_youtube_description(report, store)
         store.write_report(report)  # persist any errors recorded above
 
         if self._config.voice.enabled:
@@ -423,6 +428,23 @@ class DailyPipeline:
         except GraphicsError as exc:
             logger.error("Featured-player card rendering failed for %s: %s", featured.name, exc)
             report.errors.append(str(exc))
+
+    def _generate_thumbnail(self, report: DailyReport, store: DailyOutputStore) -> None:
+        try:
+            self._graphics_renderer.render_thumbnail(report, store.thumbnail_path)
+            logger.info("Rendered %s", store.thumbnail_path)
+        except GraphicsError as exc:
+            logger.error("Thumbnail rendering failed: %s", exc)
+            report.errors.append(str(exc))
+
+    def _generate_youtube_description(self, report: DailyReport, store: DailyOutputStore) -> None:
+        try:
+            description = generate_description(report)
+            store.write_youtube_description(description)
+            logger.info("Wrote %s", store.youtube_description_path)
+        except Exception as exc:  # noqa: BLE001 - a text-formatting step must never abort the run
+            logger.exception("Could not generate the YouTube description.")
+            report.errors.append(f"Could not generate the YouTube description: {exc}")
 
     def _synthesize_narration(self, store: DailyOutputStore, report: DailyReport) -> None:
         logger.info("Creating narration...")

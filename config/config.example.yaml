@@ -109,6 +109,11 @@ match_provider:
 # for the "america_favorite" wording this ships with (tuned for Emma
 # Navarro, WTA player id 325410, but not Emma-specific by name - a future
 # featured player could reuse the same tagline, or a different one).
+# Enabling this also automatically renders a dedicated "Featured Player"
+# spotlight graphic (output/<date>/featured_player.png -
+# wta_daily/graphics/featured_card.py) and, when video is enabled, shows it
+# during her narration segment in the synchronized video - no separate
+# toggle needed for either.
 featured_player:
   enabled: false
   player_id: "325410"  # Emma Navarro's real api.wtatennis.com player id
@@ -176,6 +181,16 @@ git:
   remote: origin
   # branch: main
   commit_message_template: "Daily WTA Update {date}"
+
+# --- YouTube publishing assets (on by default) ------------------------------
+# thumbnail.png (1280x720) and youtube_description.txt - built entirely from
+# the same report data already fetched this run, so there's no extra API
+# cost to generating either. Each can be turned off independently if you
+# don't want one of them; there's no reason to disable both other than
+# saving a fraction of a second of rendering time.
+publishing:
+  thumbnail_enabled: true
+  description_enabled: true
 
 # --- Tournament preferences --------------------------------------------------
 # Used by future modules (e.g. tournament previews) to prioritize which

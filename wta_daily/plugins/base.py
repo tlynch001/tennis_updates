@@ -149,6 +149,10 @@ class GraphicsRenderer(ABC):
         but clearly distinguishable from, a normal Top N player card (see
         :mod:`wta_daily.graphics.featured_card`)."""
 
+    @abstractmethod
+    def render_thumbnail(self, report: DailyReport, output_path: Path) -> Path:
+        """Render a bold, simple 1280x720 YouTube thumbnail for ``report``."""
+
 
 class VoiceSynthesizer(ABC):
     """Converts a narration script into an MP3 (or other audio) file."""
