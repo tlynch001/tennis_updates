@@ -141,8 +141,18 @@ class VoiceSynthesizer(ABC):
     name: str = "base"
 
     @abstractmethod
-    def synthesize(self, script_path: Path, output_path: Path) -> Path:
-        """Read ``script_path`` and write synthesized audio to ``output_path``."""
+    def synthesize(
+        self, script_path: Path, output_path: Path, report: DailyReport | None = None
+    ) -> Path:
+        """Read ``script_path`` and write synthesized audio to ``output_path``.
+
+        ``report`` is optional context a provider *may* use to derive
+        richer byproducts (e.g. per-player narration timing metadata for
+        video slide synchronization - see
+        :class:`~wta_daily.voice.elevenlabs_provider.ElevenLabsVoiceSynthesizer`)
+        without changing what gets synthesized; a provider that has no use
+        for it can simply ignore the parameter.
+        """
 
 
 class VideoAssembler(ABC):
