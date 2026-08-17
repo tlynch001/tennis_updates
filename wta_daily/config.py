@@ -245,6 +245,32 @@ class FeaturedPlayerConfig:
 
 
 @dataclass
+class PublishingConfig:
+    """YouTube-adjacent artifacts generated alongside the rest of the daily
+    output: ``thumbnail.png`` and ``youtube_description.txt`` (see the
+    README's "YouTube publishing assets" section).
+
+    Both are on by default - they're built entirely from data already
+    fetched for the day's report, so there's no extra cost to producing
+    them, unlike the optional Phase 2 features (voice/video) that call
+    paid external services. Each can still be disabled independently for
+    anyone who doesn't want one of them.
+    """
+
+    thumbnail_enabled: bool = True
+    description_enabled: bool = True
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> PublishingConfig:
+        data = data or {}
+        defaults = cls()
+        return cls(
+            thumbnail_enabled=bool(data.get("thumbnail_enabled", defaults.thumbnail_enabled)),
+            description_enabled=bool(data.get("description_enabled", defaults.description_enabled)),
+        )
+
+
+@dataclass
 class ScriptConfig:
     generator: str = "template"
     target_minutes_low: float = 5.0
@@ -307,6 +333,7 @@ class AppConfig:
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     video: VideoConfig = field(default_factory=VideoConfig)
     git: GitConfig = field(default_factory=GitConfig)
+    publishing: PublishingConfig = field(default_factory=PublishingConfig)
     tournament_preferences: list[str] = field(default_factory=list)
 
     @classmethod
@@ -335,6 +362,7 @@ class AppConfig:
             voice=VoiceConfig.from_mapping(data.get("voice")),
             video=VideoConfig.from_mapping(data.get("video")),
             git=GitConfig.from_mapping(data.get("git")),
+            publishing=PublishingConfig.from_mapping(data.get("publishing")),
             tournament_preferences=list(data.get("tournament_preferences", [])),
         )
 

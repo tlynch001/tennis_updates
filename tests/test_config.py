@@ -110,6 +110,26 @@ def test_featured_player_enabled_without_name_raises(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_publishing_config_enabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.publishing.thumbnail_enabled is True
+    assert config.publishing.description_enabled is True
+
+
+def test_publishing_config_can_be_disabled_independently(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("publishing:\n  thumbnail_enabled: false\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.publishing.thumbnail_enabled is False
+    assert config.publishing.description_enabled is True
+
+
 def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

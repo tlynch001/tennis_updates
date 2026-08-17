@@ -56,17 +56,32 @@ class DailyOutputStore:
 
     @property
     def featured_card_path(self) -> Path:
-        """Optional dedicated visual for the featured-player segment (see
-        :class:`~wta_daily.config.FeaturedPlayerConfig`). No renderer
-        currently produces this file - graphics for the featured player
-        are out of scope for now (see the README) - but
-        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler`
-        checks for it first and falls back to the leaderboard when it's
-        absent, so a future graphics addition can drop a PNG here with no
-        further code changes.
+        """Dedicated visual for the featured-player segment (see
+        :class:`~wta_daily.config.FeaturedPlayerConfig` and
+        :mod:`wta_daily.graphics.featured_card`) - only written when a
+        featured player is configured *and* her ranking was resolved this
+        run. Every consumer (notably
+        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler`)
+        must still treat a missing file here as "fall back to the
+        leaderboard", never as an error - the feature works the same way
+        with no featured player configured at all.
         """
 
         return self.root / "featured_player.png"
+
+    @property
+    def thumbnail_path(self) -> Path:
+        """The YouTube thumbnail (1280x720 - see
+        :mod:`wta_daily.graphics.thumbnail`)."""
+
+        return self.root / "thumbnail.png"
+
+    @property
+    def youtube_description_path(self) -> Path:
+        """The plain-text YouTube description (see
+        :mod:`wta_daily.youtube_description`)."""
+
+        return self.root / "youtube_description.txt"
 
     @property
     def video_path(self) -> Path:
@@ -92,6 +107,14 @@ class DailyOutputStore:
             if not script_text.endswith("\n"):
                 fh.write("\n")
         return self.script_path
+
+    def write_youtube_description(self, description_text: str) -> Path:
+        self.ensure_dirs()
+        with self.youtube_description_path.open("w", encoding="utf-8") as fh:
+            fh.write(description_text)
+            if not description_text.endswith("\n"):
+                fh.write("\n")
+        return self.youtube_description_path
 
     def player_card_path(self, rank: int) -> Path:
         return self.player_cards_dir / f"{rank:02d}.png"

@@ -18,7 +18,14 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from wta_daily.models import DailyReport, MatchLookupResult, MatchResult, PlayerRanking, PlayerReport
+from wta_daily.models import (
+    DailyReport,
+    FeaturedPlayerReport,
+    MatchLookupResult,
+    MatchResult,
+    PlayerRanking,
+    PlayerReport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +140,18 @@ class GraphicsRenderer(ABC):
         ``top_n`` is the size of the tracked list (e.g. 10) and is only used
         for display text such as "NEW in the Top 10".
         """
+
+    @abstractmethod
+    def render_featured_card(
+        self, featured: FeaturedPlayerReport, output_path: Path, *, top_n: int
+    ) -> Path:
+        """Render the featured-player spotlight PNG - visually related to,
+        but clearly distinguishable from, a normal Top N player card (see
+        :mod:`wta_daily.graphics.featured_card`)."""
+
+    @abstractmethod
+    def render_thumbnail(self, report: DailyReport, output_path: Path) -> Path:
+        """Render a bold, simple 1280x720 YouTube thumbnail for ``report``."""
 
 
 class VoiceSynthesizer(ABC):

@@ -60,6 +60,38 @@ def movement_label(movement: Movement) -> str:
     }[movement]
 
 
+#: Base wording per movement direction, used by :func:`movement_headline_text`.
+#: ``{rank}``/``{n}`` are filled in by the caller.
+_MOVEMENT_HEADLINE = {
+    Movement.UP: "MOVED UP",
+    Movement.DOWN: "MOVED DOWN",
+    Movement.SAME: "STAYED AT #{rank}",
+    Movement.NEW: "NEW IN THE TOP {n}",
+    # No previous snapshot exists to compare against - state the fact
+    # neutrally rather than implying the player just arrived.
+    Movement.UNKNOWN: "CURRENTLY #{rank}",
+}
+
+
+def movement_headline_text(
+    movement: Movement, *, rank: int, top_n: int, previous_rank: int | None = None
+) -> str:
+    """The short movement-badge headline shown on a player card (e.g.
+    ``"UP FROM #4"``, ``"STAYED AT #7"``, ``"NEW IN THE TOP 10"``).
+
+    Shared by :mod:`wta_daily.graphics.player_card` and
+    :mod:`wta_daily.graphics.featured_card` so both use identical wording
+    for the same underlying :class:`~wta_daily.models.Movement` value -
+    never invented per card type.
+    """
+
+    if movement == Movement.UP and previous_rank:
+        return f"UP FROM #{previous_rank}"
+    if movement == Movement.DOWN and previous_rank:
+        return f"DOWN FROM #{previous_rank}"
+    return _MOVEMENT_HEADLINE[movement].format(rank=rank, n=top_n)
+
+
 def fit_text(
     draw: ImageDraw.ImageDraw,
     text: str,
