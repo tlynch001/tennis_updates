@@ -45,6 +45,7 @@ class TemplateScriptGenerator(ScriptGenerator):
 
         cyclers = {
             "connector": _PhraseCycler(phrases.CONNECTORS, rng),
+            "connector_first": _PhraseCycler(phrases.FIRST_STORY_CONNECTORS, rng),
             "up": _PhraseCycler(phrases.MOVEMENT_UP, rng),
             "down": _PhraseCycler(phrases.MOVEMENT_DOWN, rng),
             "same": _PhraseCycler(phrases.MOVEMENT_SAME, rng),
@@ -97,7 +98,13 @@ class TemplateScriptGenerator(ScriptGenerator):
         cyclers: dict[str, _PhraseCycler],
         rng: random.Random,
     ) -> str:
-        connector = cyclers["connector"].next().format(rank=player.rank, n=n)
+        # The very first player story runs directly after the introduction,
+        # with no earlier story to transition "from" - continuation-style
+        # language like "Elsewhere in the Top N" or "Meanwhile" is only
+        # sensible starting with the second story onward. See
+        # phrases.FIRST_STORY_CONNECTORS's docstring.
+        connector_pool = cyclers["connector_first"] if index == 0 else cyclers["connector"]
+        connector = connector_pool.next().format(rank=player.rank, n=n)
 
         movement_clause = {
             Movement.UP: cyclers["up"].next(),

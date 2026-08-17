@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from wta_daily.config import ScriptConfig
 from wta_daily.models import DailyReport, FeaturedPlayerReport, MatchResult, Movement, PlayerReport
@@ -158,6 +158,103 @@ def test_unknown_movement_still_mentions_current_rank() -> None:
 
     for player in report.players:
         assert player.name in script
+
+
+_CONTINUATION_PHRASES = [
+    "elsewhere",
+    "meanwhile",
+    "next up",
+    "turning to",
+    "now to",
+    "moving to",
+    "also,",
+    "also today",
+]
+
+
+def _first_player_paragraph(script: str, player_name: str) -> str:
+    paragraphs = [p for p in script.split("\n\n") if p.strip()]
+    return next(p for p in paragraphs if player_name in p)
+
+
+def test_first_player_story_never_uses_a_continuation_transition() -> None:
+    """Regression test for the production incident where the very first
+    Top N story (right after the introduction) began with 'Elsewhere in
+    the Top 10' - there is nothing for it to be 'elsewhere' from yet."""
+
+    report = _sample_report([Movement.SAME, Movement.UP, Movement.DOWN, Movement.NEW])
+    first_player = report.players[0]
+
+    for day in range(1, 29):  # many simulated dates, to rule out lucky rng draws
+        dated_report = DailyReport(report_date=date(2026, 8, day), tour="wta", players=report.players)
+        script = TemplateScriptGenerator().generate(dated_report)
+        first_paragraph = _first_player_paragraph(script, first_player.name)
+        lowered = first_paragraph.lower()
+
+        for phrase in _CONTINUATION_PHRASES:
+            assert phrase not in lowered, (
+                f"First player story used continuation phrase {phrase!r} on 2026-08-{day:02d}: "
+                f"{first_paragraph!r}"
+            )
+
+
+def test_first_player_story_begins_directly_with_her_name() -> None:
+    """The first story should read naturally on its own, starting right
+    with the player's name - never manufactured filler like 'Starting at
+    number one...' either."""
+
+    report = _sample_report([Movement.SAME])
+
+    for day in range(1, 15):
+        dated_report = DailyReport(report_date=date(2026, 8, day), tour="wta", players=report.players)
+        script = TemplateScriptGenerator().generate(dated_report)
+        first_paragraph = _first_player_paragraph(script, report.players[0].name)
+
+        assert first_paragraph.startswith(report.players[0].name)
+
+
+def test_later_player_stories_can_still_use_continuation_transitions() -> None:
+    """The fix must be positional, not a blanket removal of the phrase
+    pool - later stories should still be able to say 'Elsewhere in the Top
+    N', 'Meanwhile', etc. across enough simulated days."""
+
+    report = _sample_report([Movement.SAME, Movement.UP, Movement.DOWN, Movement.NEW])
+    second_player = report.players[1]
+
+    seen_continuation_phrase = False
+    start = date(2026, 8, 1)
+    for offset in range(60):
+        dated_report = DailyReport(
+            report_date=start + timedelta(days=offset), tour="wta", players=report.players
+        )
+        script = TemplateScriptGenerator().generate(dated_report)
+        second_paragraph = _first_player_paragraph(script, second_player.name)
+        lowered = second_paragraph.lower()
+        if any(phrase in lowered for phrase in _CONTINUATION_PHRASES):
+            seen_continuation_phrase = True
+            break
+
+    assert seen_continuation_phrase, (
+        "Expected at least one later-story continuation transition across many simulated days"
+    )
+
+
+def test_first_story_connector_pool_never_presupposes_a_previous_story() -> None:
+    """Direct check on the phrase pools themselves: FIRST_STORY_CONNECTORS
+    must never contain wording that implies an earlier story, while the
+    regular CONNECTORS pool (used from the second story onward) is
+    expected to still contain that variety."""
+
+    for connector in phrases.FIRST_STORY_CONNECTORS:
+        lowered = connector.lower()
+        for phrase in _CONTINUATION_PHRASES:
+            assert phrase not in lowered
+
+    # Sanity check the fix didn't accidentally remove variety from the
+    # pool used for every subsequent story.
+    combined_later_pool = " ".join(phrases.CONNECTORS).lower()
+    assert "elsewhere" in combined_later_pool
+    assert "meanwhile" in combined_later_pool
 
 
 def test_no_featured_player_produces_no_extra_content() -> None:
