@@ -94,7 +94,8 @@ class DailyPipeline:
 
         logger.info("Generating graphics...")
         self._render_graphics(report, store)
-        store.write_report(report)  # persist any graphics errors recorded above
+        self._render_featured_card(report, store)
+        store.write_report(report)  # persist any errors recorded above
 
         if self._config.voice.enabled:
             self._synthesize_narration(store, report)
@@ -398,6 +399,30 @@ class DailyPipeline:
             except GraphicsError as exc:
                 logger.error("Player card rendering failed for %s: %s", player.name, exc)
                 report.errors.append(str(exc))
+
+    def _render_featured_card(self, report: DailyReport, store: DailyOutputStore) -> None:
+        """Render the featured-player spotlight visual, if there's a real
+        one to render this run.
+
+        Deliberately keyed off ``report.featured_player`` (built earlier
+        from config, not a hard-coded name) rather than any
+        player-specific check - a differently-configured featured player
+        works identically. Nothing is rendered (not an error) when the
+        feature is disabled, or when her ranking couldn't be resolved this
+        run - there's no honest visual to draw without at least a rank.
+        """
+
+        featured = report.featured_player
+        if featured is None or featured.rank is None:
+            return
+        try:
+            self._graphics_renderer.render_featured_card(
+                featured, store.featured_card_path, top_n=self._config.top_n
+            )
+            logger.info("Rendered %s", store.featured_card_path)
+        except GraphicsError as exc:
+            logger.error("Featured-player card rendering failed for %s: %s", featured.name, exc)
+            report.errors.append(str(exc))
 
     def _synthesize_narration(self, store: DailyOutputStore, report: DailyReport) -> None:
         logger.info("Creating narration...")

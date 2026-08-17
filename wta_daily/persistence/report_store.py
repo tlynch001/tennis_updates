@@ -56,14 +56,15 @@ class DailyOutputStore:
 
     @property
     def featured_card_path(self) -> Path:
-        """Optional dedicated visual for the featured-player segment (see
-        :class:`~wta_daily.config.FeaturedPlayerConfig`). No renderer
-        currently produces this file - graphics for the featured player
-        are out of scope for now (see the README) - but
-        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler`
-        checks for it first and falls back to the leaderboard when it's
-        absent, so a future graphics addition can drop a PNG here with no
-        further code changes.
+        """Dedicated visual for the featured-player segment (see
+        :class:`~wta_daily.config.FeaturedPlayerConfig` and
+        :mod:`wta_daily.graphics.featured_card`) - only written when a
+        featured player is configured *and* her ranking was resolved this
+        run. Every consumer (notably
+        :class:`~wta_daily.video.ffmpeg_assembler.FfmpegVideoAssembler`)
+        must still treat a missing file here as "fall back to the
+        leaderboard", never as an error - the feature works the same way
+        with no featured player configured at all.
         """
 
         return self.root / "featured_player.png"

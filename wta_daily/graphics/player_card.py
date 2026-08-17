@@ -11,18 +11,8 @@ from wta_daily.countries import get_country_info
 from wta_daily.exceptions import GraphicsError
 from wta_daily.graphics.flags import render_flag
 from wta_daily.graphics.fonts import load_font
-from wta_daily.graphics.utils import fit_text, hex_to_rgb, movement_color
-from wta_daily.models import Movement, PlayerReport
-
-_MOVEMENT_HEADLINE = {
-    Movement.UP: "MOVED UP",
-    Movement.DOWN: "MOVED DOWN",
-    Movement.SAME: "STAYED AT #{rank}",
-    Movement.NEW: "NEW IN THE TOP {n}",
-    # No previous snapshot exists to compare against - state the fact
-    # neutrally rather than implying the player just arrived.
-    Movement.UNKNOWN: "CURRENTLY #{rank}",
-}
+from wta_daily.graphics.utils import fit_text, hex_to_rgb, movement_color, movement_headline_text
+from wta_daily.models import PlayerReport
 
 
 def render_player_card(
@@ -88,11 +78,9 @@ def _render(
     )
     country_bbox = draw.textbbox((name_x, country_top), country_name, font=country_font, anchor="la")
 
-    movement_headline = _MOVEMENT_HEADLINE[player.movement].format(rank=player.rank, n=top_n)
-    if player.movement == Movement.UP and player.previous_rank:
-        movement_headline = f"UP FROM #{player.previous_rank}"
-    elif player.movement == Movement.DOWN and player.previous_rank:
-        movement_headline = f"DOWN FROM #{player.previous_rank}"
+    movement_headline = movement_headline_text(
+        player.movement, rank=player.rank, top_n=top_n, previous_rank=player.previous_rank
+    )
     badge_color = movement_color(player.movement, theme)
     badge_top = country_bbox[3] + gap
     badge_w = draw.textlength(movement_headline, font=badge_font) + width * 0.03

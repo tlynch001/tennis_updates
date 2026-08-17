@@ -6,9 +6,10 @@ from pathlib import Path
 from PIL import Image
 
 from wta_daily.config import GraphicsConfig
+from wta_daily.graphics.featured_card import render_featured_card
 from wta_daily.graphics.leaderboard import render_leaderboard
 from wta_daily.graphics.player_card import render_player_card
-from wta_daily.models import DailyReport, MatchResult, Movement, PlayerReport
+from wta_daily.models import DailyReport, FeaturedPlayerReport, MatchResult, Movement, PlayerReport
 
 
 def _report() -> DailyReport:
@@ -127,5 +128,100 @@ def test_render_player_card_handles_unknown_movement(tmp_path: Path) -> None:
     output_path = tmp_path / "card.png"
 
     render_player_card(player, output_path, config, top_n=10)
+
+    assert output_path.exists()
+
+
+# --- Featured-player card -----------------------------------------------------
+
+
+def test_render_featured_card_creates_correctly_sized_png(tmp_path: Path) -> None:
+    config = GraphicsConfig(width=640, height=360)
+    match = MatchResult(
+        opponent="Some Opponent",
+        tournament="Cincinnati",
+        round="Round of 32",
+        score="6-4 6-2",
+        won=True,
+        match_date=date(2026, 8, 15),
+    )
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        country_code="USA",
+        rank=28,
+        points=1669,
+        movement=Movement.SAME,
+        previous_rank=28,
+        match=match,
+    )
+    output_path = tmp_path / "featured.png"
+
+    result_path = render_featured_card(featured, output_path, config, top_n=10)
+
+    assert result_path == output_path
+    assert output_path.exists()
+    with Image.open(output_path) as img:
+        assert img.size == (640, 360)
+
+
+def test_render_featured_card_handles_unavailable_rank_without_crashing(tmp_path: Path) -> None:
+    """No rank at all this run - the card must still render, with an honest
+    'unavailable' message rather than a fabricated number."""
+
+    config = GraphicsConfig(width=640, height=360)
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        rank_error="network timeout",
+    )
+    output_path = tmp_path / "featured.png"
+
+    render_featured_card(featured, output_path, config, top_n=10)
+
+    assert output_path.exists()
+
+
+def test_render_featured_card_handles_no_match(tmp_path: Path) -> None:
+    config = GraphicsConfig(width=640, height=360)
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        country_code="USA",
+        rank=28,
+        points=1669,
+        movement=Movement.SAME,
+        previous_rank=28,
+        match=None,
+    )
+    output_path = tmp_path / "featured.png"
+
+    render_featured_card(featured, output_path, config, top_n=10)
+
+    assert output_path.exists()
+
+
+def test_render_featured_card_handles_player_inside_top_n(tmp_path: Path) -> None:
+    """When she's genuinely inside the tracked group, the card must still
+    render without claiming she's outside it."""
+
+    config = GraphicsConfig(width=640, height=360)
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        country_code="USA",
+        rank=8,
+        points=4000,
+        movement=Movement.NEW,
+        previous_rank=None,
+        match=None,
+    )
+    output_path = tmp_path / "featured.png"
+
+    render_featured_card(featured, output_path, config, top_n=10)
 
     assert output_path.exists()
