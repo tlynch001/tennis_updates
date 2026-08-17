@@ -28,6 +28,7 @@ default. See ["Roadmap"](#roadmap) for what's next.
 - [Data source research & recommendation](#data-source-research--recommendation)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
+- [Narration pronunciation (ElevenLabs)](#narration-pronunciation-elevenlabs)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -562,6 +563,144 @@ Graphics were deliberately left untouched for this feature (the official
 leaderboard stays the official leaderboard) - the priority here was data
 correctness and narration, per the feature's own scope.
 
+## Narration pronunciation (ElevenLabs)
+
+Two problems showed up once ElevenLabs narration (`voice.enabled: true`)
+was actually in use, both fixed without touching `script.txt` or
+`report.json` - the fix only changes what's sent to ElevenLabs for
+synthesis, right before the API call.
+
+### 1. What caused the problems
+
+* **Player names**: `ElevenLabsVoiceSynthesizer.synthesize` sent
+  `script.txt` to ElevenLabs completely as-is. With no pronunciation
+  guidance attached, ElevenLabs falls back to generic English
+  letter-to-sound rules, which mishandle several WTA surnames whose
+  spelling doesn't map onto English pronunciation conventions -
+  `"Swiatek"` (real pronunciation roughly "shvee-ON-tek") is the most
+  notorious example, but `"Muchova"`, `"Krejcikova"`, `"Chwalinska"`,
+  `"Jovic"`, and `"Cirstea"` all come out noticeably wrong by default too.
+* **Scores**: a score string like `"3-6,6-4,6-2"` is unambiguous written
+  down, but a general-purpose TTS engine has no tennis-specific grammar -
+  a bare `N-M` reads naturally as a numeric *range* ("three to six"), and
+  stacking several with commas compounds the confusion.
+
+### 2. Options considered
+
+| Option | Verdict |
+| --- | --- |
+| ElevenLabs **phoneme rules** (IPA/CMU) in a pronunciation dictionary | Most precise in principle, but ElevenLabs' own docs are explicit that phoneme tags only take effect on the `eleven_flash_v2`/`eleven_v3` models - every other model, **including this project's configured default `eleven_multilingual_v2`** (see `VoiceConfig.model_id`), silently ignores them. Ruled out for the names dictionary as currently configured; noted below as an option if the model ever changes. |
+| ElevenLabs **alias rules** in a pronunciation dictionary | A plain-text respelling substituted at synthesis time, supported by **every** model. Never changes the underlying text - report.json/script.txt still show the correctly-spelled name. **Chosen for player names.** |
+| Full **SSML** (e.g. inline `<phoneme>` tags in the request text) | ElevenLabs' TTS API does not support general inline SSML phoneme/pronunciation tags in the request text itself - pronunciation dictionaries are the supported mechanism for this, not markup embedded in `text`. Ruled out - not available for the model in use. |
+| ElevenLabs' built-in **text normalization** (`apply_text_normalization`) | A coarse, generic normalizer (dates, currency, etc.), not tennis-aware - it has no notion of "this hyphen separates two game counts," so it wouldn't reliably turn `"3-6"` into "three six" rather than "three to six" or "three dash six." Ruled out for scores. |
+| Hard-coded **literal score lookup table** | Scores are an open-ended pattern (any `N-M`, any number of sets, optional tiebreak sub-scores) - a literal table would be both incomplete and unmaintainable. Ruled out in favor of a general rule. |
+| Custom **rule-based text normalization**, applied only to the TTS input | General (covers any score, not a fixed list), maintainable, and has no equivalent "native" ElevenLabs mechanism to defer to instead (dictionaries only match finite literal strings, not open-ended patterns). **Chosen for scores.** |
+
+### 3. Solution chosen, and why
+
+* **Player names -> ElevenLabs pronunciation dictionary (alias rules)**,
+  managed by `wta_daily/voice/pronunciation_dictionary.py`. A curated,
+  maintainable `PLAYER_NAME_ALIASES` dict (surname -> phonetic respelling)
+  is uploaded via `POST /v1/pronunciation-dictionaries/add-from-rules`
+  and attached to every synthesis request via
+  `pronunciation_dictionary_locators`. This is the ElevenLabs-native
+  mechanism the task asked to prefer over a fragile workaround - it
+  changes only the *audio*, never the text.
+* **Scores -> a small regex-based normalizer**,
+  `wta_daily/voice/narration_text.py`. Detects any run of `N-M` or
+  `N-M(T)` tokens (comma/space separated - covering every format our
+  match providers actually produce, e.g. `"6-4 6-2"` and `"6-3,6-2"`) and
+  spells each set out in words with a natural pause between sets,
+  regardless of what the specific numbers are. Applied only to the text
+  handed to the ElevenLabs API, immediately before that call.
+
+### 4. Before / after
+
+```text
+BEFORE (as sent to ElevenLabs, before this fix):
+  ...closing it out 6-3,6-2 at Cincinnati.
+
+AFTER (as sent to ElevenLabs, after this fix):
+  ...closing it out six three, six two at Cincinnati.
+```
+
+```text
+BEFORE: 7-6(4) 4-6 6-3
+AFTER:  seven six, four six, six three
+```
+
+`report.json`/`script.txt` are byte-for-byte unaffected in both cases -
+verified live against a real generated script (see
+`tests/test_narration_text.py` and `tests/test_elevenlabs_provider.py`):
+
+```json
+"score": "6-3,6-2"   // report.json - unchanged, exactly as before
+```
+
+### 5. Effect on ElevenLabs input
+
+`ElevenLabsVoiceSynthesizer.synthesize` now, in order:
+
+1. Reads `script.txt` (unchanged).
+2. Runs it through `normalize_for_speech` (scores only, for now) to build
+   a separate, speech-only `text` value - never written back to disk.
+3. Resolves a pronunciation-dictionary locator via
+   `get_or_create_locator`, which checks a small on-disk cache
+   (`data/cache/elevenlabs_pronunciation_dictionary.json`, alongside the
+   project's other provider-level caches - see "Folder structure") keyed
+   by a hash of the current alias list, and only calls the ElevenLabs API
+   to create/update the dictionary if that cache is missing or stale.
+   **A normal day-to-day run makes zero extra API calls** - verified by
+   running `synthesize()` twice in a row with the HTTP layer mocked: the
+   `add-from-rules` call happens once, not on the second run (see
+   `tests/test_pronunciation_dictionary.py`).
+4. Sends one `POST /v1/text-to-speech/{voice_id}` request with the
+   speech-only text and (if step 3 succeeded) a
+   `pronunciation_dictionary_locators` entry - the same single request as
+   before this change, just with better input.
+
+Any failure in steps 2-3 degrades gracefully (logs a warning, proceeds
+without the dictionary) rather than blocking narration - only a genuine
+failure of the text-to-speech call itself (step 4) raises
+`VoiceSynthesisError`, same as before this change.
+
+### 6. Limitations / names that still need manual tuning
+
+* `PLAYER_NAME_ALIASES` is a curated, by-ear list (currently: Świątek,
+  Sabalenka, Muchova, Krejcikova, Bouzkova, Chwalinska, Jovic, Cirstea) -
+  not exhaustive. Adding a newly-mispronounced name is a one-line edit to
+  that dict; no other code changes needed, and the dictionary is
+  recreated automatically the next time that list's content changes.
+* Alias respellings are an approximation (English graphemes standing in
+  for non-English sounds), not exact phonetics - if this project ever
+  switches `voice.model_id` to `eleven_flash_v2`/`eleven_v3`, precise IPA
+  phoneme rules become available and could replace some aliases for
+  closer accuracy (the dictionary-management code already supports adding
+  phoneme-type rules; only `PLAYER_NAME_ALIASES`'s rule *type* per entry
+  would need to change).
+* The tiebreak point count in a score like `"7-6(4)"` is intentionally
+  **dropped** for speech (spoken as "seven six", not "seven six four") -
+  reading it as a third bare number right after the set score would be
+  more confusing than informative, and the set score that actually
+  matters for narration is unaffected. The written score keeps the full
+  `"7-6(4)"` detail everywhere else.
+* Set `voice.pronunciation_dictionary_enabled: false` to disable
+  attaching the dictionary (e.g. while debugging) without disabling voice
+  synthesis entirely.
+
+### 7. Tests
+
+`tests/test_narration_text.py` (score normalization, including the exact
+reported example, tiebreak notation, double-digit super-tiebreaks, and a
+regression guard proving a hyphenated date is never misread as/clipped
+into a score), `tests/test_pronunciation_dictionary.py` (create-once-and-
+cache behavior, cache invalidation when the alias list changes, and
+graceful failure), and `tests/test_elevenlabs_provider.py` (the full
+synthesize() flow: speech text is normalized, script.txt is never
+modified, the locator is attached when available and omitted when not,
+and the feature can be disabled via config) - all using mocked HTTP, so
+`pytest` never calls the real ElevenLabs API.
+
 ## Player imagery: legal approach
 
 The brief is explicit: don't download copyrighted player headshots. This
@@ -940,7 +1079,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 210 unit/integration tests cover models (including `DailyReport.match_target_date`
+Over 246 unit/integration tests cover models (including `DailyReport.match_target_date`
 and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
 math (including the "unknown" vs "new"
@@ -979,7 +1118,10 @@ per-player-failure-isolation scenario, the "rankings fetched exactly once
 per run, wider pool exposed for reuse" behavior, and the featured player's
 every outside-Top-N/moving-toward-Top-N/steady/moving-down/win/loss/no-match/
 match-unavailable/entered-Top-N/reached-No.-1/lookup-failure-isolated
-scenario in `tests/test_pipeline_integration.py`) - all using the offline
+scenario in `tests/test_pipeline_integration.py`), and the ElevenLabs
+narration-pronunciation fixes (score normalization, pronunciation
+dictionary create/cache/failure behavior, and the full synthesize() flow -
+see "Narration pronunciation (ElevenLabs)" above) - all using the offline
 `sample` providers, synthetic in-test providers, or mocked HTTP responses,
 so `pytest` never makes a real network call.
 

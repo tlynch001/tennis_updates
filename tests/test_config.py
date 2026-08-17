@@ -110,6 +110,27 @@ def test_featured_player_enabled_without_name_raises(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_voice_config_pronunciation_dictionary_enabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("voice:\n  enabled: false\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.voice.pronunciation_dictionary_enabled is True
+
+
+def test_voice_config_pronunciation_dictionary_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "voice:\n  enabled: false\n  pronunciation_dictionary_enabled: false\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.voice.pronunciation_dictionary_enabled is False
+
+
 def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

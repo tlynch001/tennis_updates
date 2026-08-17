@@ -402,7 +402,11 @@ class DailyPipeline:
     def _synthesize_narration(self, store: DailyOutputStore, report: DailyReport) -> None:
         logger.info("Creating narration...")
         try:
-            synthesizer = voice_registry.create(self._config.voice.provider, voice_config=self._config.voice)
+            synthesizer = voice_registry.create(
+                self._config.voice.provider,
+                voice_config=self._config.voice,
+                cache_dir=self._config.data_dir / "cache",
+            )
             synthesizer.synthesize(store.script_path, store.narration_path)
             logger.info("Wrote %s", store.narration_path)
         except VoiceSynthesisError as exc:

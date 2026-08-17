@@ -158,6 +158,13 @@ voice:
   stability: 0.5
   similarity_boost: 0.75
   api_key_env: ELEVENLABS_API_KEY
+  # Tennis scores are always spelled out for speech (see
+  # wta_daily/voice/narration_text.py) - not configurable, since it never
+  # changes script.txt/report.json and has no real downside.
+  # Player-name pronunciation, on the other hand, uses an ElevenLabs
+  # pronunciation dictionary (wta_daily/voice/pronunciation_dictionary.py);
+  # set this to false to disable attaching it (e.g. while debugging).
+  pronunciation_dictionary_enabled: true
 
 # --- Video assembly (Phase 2, disabled by default) -------------------------
 video:

@@ -134,6 +134,14 @@ class VoiceConfig:
     stability: float = 0.5
     similarity_boost: float = 0.75
     api_key_env: str = "ELEVENLABS_API_KEY"
+    #: Whether to attach an ElevenLabs pronunciation dictionary (player-name
+    #: alias respellings - see wta_daily/voice/pronunciation_dictionary.py)
+    #: to each synthesis request. On by default; the dictionary is created/
+    #: updated via the API only the first time (or after the alias list in
+    #: code changes), never on every run, and any failure here just logs a
+    #: warning and falls back to synthesizing without it - never blocks
+    #: narration entirely.
+    pronunciation_dictionary_enabled: bool = True
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> VoiceConfig:
@@ -147,6 +155,11 @@ class VoiceConfig:
             stability=float(data.get("stability", defaults.stability)),
             similarity_boost=float(data.get("similarity_boost", defaults.similarity_boost)),
             api_key_env=data.get("api_key_env", defaults.api_key_env),
+            pronunciation_dictionary_enabled=bool(
+                data.get(
+                    "pronunciation_dictionary_enabled", defaults.pronunciation_dictionary_enabled
+                )
+            ),
         )
 
     def resolve_api_key(self) -> str | None:
