@@ -98,6 +98,23 @@ match_provider:
   #     provider: live_tennis_api
   #     api_key_env: LIVETENNISAPI_KEY
 
+# --- Official ranking interpretation --------------------------------------
+# Governs how the app *treats* whatever rankings_provider above returns -
+# separate from *where* rankings come from. See README.md's "Official
+# ranking vs. daily match activity" section: the app's Top N order/points
+# always reflect the WTA's own most recently published ranking list, and a
+# player winning (or losing) a match never changes that list by itself -
+# only a genuinely new official ranking publication does.
+rankings:
+  # Reserved for a future "live"/"projected" ranking feature (estimating
+  # where a player might land on the *next* official list from
+  # in-progress tournament points) - NOT implemented yet, and must stay
+  # false. Setting this to true raises a clear configuration error rather
+  # than silently doing nothing; if it's ever implemented, a projected
+  # rank will always be labeled as such (e.g. "projected No. 4") and will
+  # never be displayed as if it were the official ranking.
+  projected_rankings_enabled: false
+
 # --- Featured player (recurring editorial segment, disabled by default) ----
 # A short, playful, recurring spotlight on one specific player, layered on
 # top of - never mixed into - the factual Top N coverage above. Every fact

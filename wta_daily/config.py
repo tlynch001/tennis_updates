@@ -245,6 +245,46 @@ class FeaturedPlayerConfig:
 
 
 @dataclass
+class RankingsConfig:
+    """Settings governing how the official WTA ranking is interpreted -
+    kept separate from ``rankings_provider`` (which selects *where* rankings
+    come from) since this block is about how the app *treats* whatever a
+    provider returns.
+
+    ``projected_rankings_enabled`` is a placeholder for a genuinely
+    different, future concept: a "live"/"projected" ranking that estimates
+    where a player might land on the *next* official list based on points
+    being earned in an ongoing tournament. That is deliberately **not**
+    implemented yet (it would need real logic to estimate provisional
+    points from in-progress tournament results, which the current data
+    layer doesn't provide) - this flag exists purely so the config schema
+    has an explicit, discoverable place for it, and so enabling it fails
+    loudly rather than silently doing nothing. See the README's "Official
+    ranking vs. daily match activity" section. Must stay ``False``.
+    """
+
+    projected_rankings_enabled: bool = False
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> RankingsConfig:
+        data = data or {}
+        defaults = cls()
+        config = cls(
+            projected_rankings_enabled=bool(
+                data.get("projected_rankings_enabled", defaults.projected_rankings_enabled)
+            )
+        )
+        if config.projected_rankings_enabled:
+            raise ConfigurationError(
+                "rankings.projected_rankings_enabled is true, but projected/live rankings are "
+                "not implemented yet - this is a reserved placeholder for a future feature. "
+                "Set it back to false. Official rankings (rankings_provider) are unaffected by "
+                "this setting."
+            )
+        return config
+
+
+@dataclass
 class PublishingConfig:
     """YouTube-adjacent artifacts generated alongside the rest of the daily
     output: ``thumbnail.png`` and ``youtube_description.txt`` (see the
@@ -377,6 +417,7 @@ class AppConfig:
         default_factory=lambda: ProviderConfig(name="wta_official")
     )
     featured_player: FeaturedPlayerConfig = field(default_factory=FeaturedPlayerConfig)
+    rankings: RankingsConfig = field(default_factory=RankingsConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     script: ScriptConfig = field(default_factory=ScriptConfig)
     graphics: GraphicsConfig = field(default_factory=GraphicsConfig)
@@ -407,6 +448,7 @@ class AppConfig:
                 data.get("match_provider"), default_name="wta_official"
             ),
             featured_player=FeaturedPlayerConfig.from_mapping(data.get("featured_player")),
+            rankings=RankingsConfig.from_mapping(data.get("rankings")),
             network=NetworkConfig.from_mapping(data.get("network")),
             script=ScriptConfig.from_mapping(data.get("script")),
             graphics=GraphicsConfig.from_mapping(data.get("graphics")),

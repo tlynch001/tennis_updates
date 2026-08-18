@@ -52,7 +52,28 @@ class Movement(StrEnum):
 
 @dataclass(frozen=True)
 class PlayerRanking:
-    """A single player's position in a rankings snapshot."""
+    """A single player's position in the **officially published** WTA
+    ranking list - never a live/in-tournament/projected figure.
+
+    ``rank``/``points`` are exactly the values the ranking source (see
+    :class:`~wta_daily.plugins.base.RankingsProvider`) reports for its most
+    recently published list; nothing in this application recalculates or
+    adjusts them from daily match results - see the README's "Official
+    ranking vs. daily match activity" section for the architectural
+    guarantee this supports.
+
+    ``ranking_date`` is the publication date of that official list, if the
+    provider exposes one (``wta_official`` does, via the upstream API's
+    ``rankedAt`` field - the same value for every player in one response,
+    since it identifies the *list*, not the player). ``None`` for a
+    provider that doesn't supply this (e.g. the offline ``sample``
+    fixture) - callers must treat that as "unknown, not necessarily
+    different from any other snapshot," never as "changed." This is what
+    lets the pipeline tell "a new official ranking was published" apart
+    from "the same list was simply fetched again on a different calendar
+    day" - see :func:`wta_daily.movement.compute_movement`'s
+    ``same_official_ranking_list`` parameter.
+    """
 
     rank: int
     player_id: str
@@ -60,6 +81,7 @@ class PlayerRanking:
     country_code: str
     points: int
     previous_rank: int | None = None
+    ranking_date: date | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,10 +91,12 @@ class PlayerRanking:
             "country_code": self.country_code,
             "points": self.points,
             "previous_rank": self.previous_rank,
+            "ranking_date": self.ranking_date.isoformat() if self.ranking_date else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlayerRanking:
+        raw_ranking_date = data.get("ranking_date")
         return cls(
             rank=int(data["rank"]),
             player_id=str(data["player_id"]),
@@ -80,6 +104,7 @@ class PlayerRanking:
             country_code=str(data.get("country_code", "")),
             points=int(data.get("points", 0)),
             previous_rank=data.get("previous_rank"),
+            ranking_date=date.fromisoformat(raw_ranking_date) if raw_ranking_date else None,
         )
 
 
@@ -155,7 +180,19 @@ class MatchLookupResult:
 
 @dataclass
 class PlayerReport:
-    """Everything the downstream script/graphics/video steps need for one player."""
+    """Everything the downstream script/graphics/video steps need for one player.
+
+    ``rank``/``points``/``movement`` all describe the player's position on
+    the **officially published** WTA ranking list for this report (see
+    :class:`PlayerRanking` and :func:`wta_daily.movement.compute_movement`)
+    - they are never recalculated from ``match`` below. ``match`` is a
+    completely independent fact ("did she play, and what happened, on the
+    specific date this report covers") that affects the *narration* for
+    this player but must never be allowed to imply a ranking change by
+    itself; every consumer (graphics, script generator, YouTube
+    description) is expected to keep these two concerns in separate
+    sentences/fields rather than deriving one from the other.
+    """
 
     rank: int
     name: str
@@ -239,9 +276,14 @@ class FeaturedPlayerReport:
     - see :class:`~wta_daily.config.FeaturedPlayerConfig`.
 
     Every fact here (``rank``, ``points``, ``movement``, ``match``) is
-    retrieved through exactly the same provider architecture as the Top N;
-    only the *narration* built from this model is allowed to editorialize
-    (see :mod:`wta_daily.scripts_gen.featured_player_phrases`). A fact that
+    retrieved through exactly the same provider architecture as the Top N -
+    ``rank``/``points``/``movement`` describe her position on the
+    **officially published** WTA list (see :class:`PlayerReport`'s
+    docstring for the same guarantee), never a total recalculated from
+    ``match``. Only the *narration* built from this model is allowed to
+    editorialize (see :mod:`wta_daily.scripts_gen.featured_player_phrases`),
+    and even then only by describing these two facts in separate sentences,
+    never by inventing a ranking change from a match result. A fact that
     could not be determined this run is ``None`` rather than guessed -
     ``rank_error``/``match_error`` explain why when that happens, without
     treating it as a fatal error for the rest of the pipeline.
@@ -359,6 +401,16 @@ class DailyReport:
     #: Top N" when her real rank actually qualifies. `None` whenever the
     #: feature is disabled.
     featured_player: FeaturedPlayerReport | None = None
+    #: Publication date of the officially published WTA ranking list that
+    #: every player's ``rank``/``points``/``movement`` in this report is
+    #: based on (see :class:`PlayerRanking`'s docstring for where this
+    #: comes from) - ``None`` when the configured rankings provider doesn't
+    #: expose one (e.g. the offline ``sample`` fixture). This is *not*
+    #: necessarily the same as ``report_date``: the official list stays
+    #: the same for the whole ranking week, so this date only changes when
+    #: the WTA actually publishes a new one, which is exactly the point -
+    #: see the README's "Official ranking vs. daily match activity" section.
+    ranking_date: date | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -367,6 +419,7 @@ class DailyReport:
             "match_target_date": (
                 self.match_target_date.isoformat() if self.match_target_date else None
             ),
+            "ranking_date": self.ranking_date.isoformat() if self.ranking_date else None,
             "players": [p.to_dict() for p in self.players],
             "featured_player": self.featured_player.to_dict() if self.featured_player else None,
             "errors": self.errors,
@@ -375,6 +428,7 @@ class DailyReport:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DailyReport:
         raw_target_date = data.get("match_target_date")
+        raw_ranking_date = data.get("ranking_date")
         raw_featured_player = data.get("featured_player")
         return cls(
             report_date=date.fromisoformat(data["date"]),
@@ -382,6 +436,7 @@ class DailyReport:
             players=[PlayerReport.from_dict(p) for p in data.get("players", [])],
             errors=list(data.get("errors", [])),
             match_target_date=date.fromisoformat(raw_target_date) if raw_target_date else None,
+            ranking_date=date.fromisoformat(raw_ranking_date) if raw_ranking_date else None,
             featured_player=(
                 FeaturedPlayerReport.from_dict(raw_featured_player) if raw_featured_player else None
             ),

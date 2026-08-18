@@ -31,7 +31,21 @@ logger = logging.getLogger(__name__)
 
 
 class RankingsProvider(ABC):
-    """Retrieves a tour's current rankings snapshot."""
+    """Retrieves a tour's current, **officially published** rankings
+    snapshot - never a live/in-tournament/projected estimate (see the
+    README's "Official ranking vs. daily match activity" section for why
+    that distinction matters to this project). If the underlying source
+    exposes the publication date of the list it returned, implementations
+    should set it on each :class:`~wta_daily.models.PlayerRanking` via
+    ``ranking_date`` (``wta_official`` does this from the upstream API's
+    ``rankedAt`` field) - this is what lets the pipeline tell "a new
+    official list was published" apart from "the same list was simply
+    fetched again," which in turn is what keeps a match result from ever
+    being able to imply a ranking change on its own. Leaving
+    ``ranking_date`` unset (``None``) is always safe - callers fall back to
+    comparing rank numbers directly, exactly as before this concept
+    existed.
+    """
 
     #: Unique, stable identifier used in configuration files (e.g. "wta_official").
     name: str = "base"

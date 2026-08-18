@@ -13,7 +13,7 @@ unconfirmed tournament) is simply omitted rather than guessed.
 
 from __future__ import annotations
 
-from wta_daily.models import DailyReport, FeaturedPlayerReport
+from wta_daily.models import DailyReport, FeaturedPlayerReport, Movement
 from wta_daily.tournament_context import most_relevant_tournament
 
 
@@ -51,8 +51,13 @@ def _featured_summary(featured: FeaturedPlayerReport, top_n: int) -> str:
     built from fields that are actually populated on ``featured``."""
 
     summary = f"Currently ranked No. {featured.rank}"
-    if featured.rank is not None and featured.previous_rank and featured.rank != featured.previous_rank:
-        direction = "up from" if featured.rank < featured.previous_rank else "down from"
+    # Gated on the already-computed `movement` (see wta_daily.movement),
+    # never on a fresh `rank != previous_rank` comparison here - `movement`
+    # is what carries the "this is only true between two official ranking
+    # releases, never because of a single match result" guarantee, and
+    # duplicating that comparison independently would bypass it.
+    if featured.movement in (Movement.UP, Movement.DOWN) and featured.previous_rank:
+        direction = "up from" if featured.movement is Movement.UP else "down from"
         summary += f" ({direction} No. {featured.previous_rank})"
 
     if featured.match is not None:

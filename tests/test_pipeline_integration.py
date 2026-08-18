@@ -868,3 +868,278 @@ def test_missing_tournament_data_does_not_crash_the_run(tmp_path: Path) -> None:
     assert (output_dir / "thumbnail.png").exists()
     description = (output_dir / "youtube_description.txt").read_text()
     assert "None" not in description
+
+
+# --- Official ranking vs. daily match activity -------------------------------
+#
+# These are the regression tests for the core architectural guarantee: a
+# match result must never, by itself, cause the app to report an official
+# ranking change - only an actual new official WTA ranking publication can.
+# See wta_daily/movement.py and README.md's "Official ranking vs. daily
+# match activity" section.
+
+
+def _official_ranking(rank: int, player_id: str, name: str, points: int, ranking_date: date) -> PlayerRanking:
+    return PlayerRanking(
+        rank=rank,
+        player_id=player_id,
+        name=name,
+        country_code="USA",
+        points=points,
+        ranking_date=ranking_date,
+    )
+
+
+def test_daily_win_does_not_change_official_ranking(tmp_path: Path) -> None:
+    """Test 1: Player A official rank=4, Player B official rank=5. Player B
+    wins a match and earns tournament points. Expected: ranks are
+    unchanged, and movement is SAME, until a new official ranking list
+    says otherwise."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    rankings = [
+        _official_ranking(4, "player-a", "Player A", 5000, ranking_date),
+        _official_ranking(5, "player-b", "Player B", 4800, ranking_date),
+    ]
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(rankings)
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 11))  # establishes the baseline snapshot
+
+    win = MatchResult(
+        opponent="Someone",
+        tournament="Cincinnati",
+        round="Quarterfinal",
+        score="6-4 6-3",
+        won=True,
+        match_date=date(2026, 8, 11),
+    )
+    pipeline._match_provider = _SyntheticMatchProvider(matches={"player-b": win})
+    report = pipeline.run(date(2026, 8, 12))
+
+    by_id = {p.player_id: p for p in report.players}
+    assert by_id["player-a"].rank == 4
+    assert by_id["player-b"].rank == 5
+    assert by_id["player-a"].movement == Movement.SAME
+    assert by_id["player-b"].movement == Movement.SAME
+    # The match is still reported as daily activity - just not as a ranking change.
+    assert by_id["player-b"].match == win
+
+
+def test_official_ranking_movement_forced_same_even_if_raw_numbers_wobble(
+    tmp_path: Path,
+) -> None:
+    """Defensive/robustness case beyond Test 1: even if the *raw* rank
+    numbers a provider returns were to differ slightly (a hypothetical
+    transient upstream inconsistency), the app must still report SAME as
+    long as the official ranking_date hasn't actually changed - this is
+    the guarantee that makes "official movement" trustworthy rather than
+    an accident of a stable-but-unverified upstream source."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(4, "player-a", "Player A", 5000, ranking_date),
+            _official_ranking(5, "player-b", "Player B", 4800, ranking_date),
+        ]
+    )
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 11))
+
+    # Same ranking_date, but (hypothetically) the numbers themselves wobbled.
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(3, "player-a", "Player A", 5010, ranking_date),
+            _official_ranking(6, "player-b", "Player B", 4790, ranking_date),
+        ]
+    )
+    report = pipeline.run(date(2026, 8, 12))
+
+    by_id = {p.player_id: p for p in report.players}
+    assert by_id["player-a"].movement == Movement.SAME
+    assert by_id["player-b"].movement == Movement.SAME
+
+
+def test_new_official_ranking_publication_updates_positions_and_movement(
+    tmp_path: Path,
+) -> None:
+    """Test 2: previous official list has A=4/B=5; a genuinely new official
+    list has B=4/A=5. Expected: the app accepts the new ranking and
+    identifies the movement correctly."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    pipeline = DailyPipeline(config)
+    old_date = date(2026, 8, 10)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(4, "player-a", "Player A", 5000, old_date),
+            _official_ranking(5, "player-b", "Player B", 4800, old_date),
+        ]
+    )
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 11))
+
+    new_date = date(2026, 8, 17)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(4, "player-b", "Player B", 5100, new_date),
+            _official_ranking(5, "player-a", "Player A", 4900, new_date),
+        ]
+    )
+    report = pipeline.run(date(2026, 8, 18))
+
+    by_id = {p.player_id: p for p in report.players}
+    assert by_id["player-b"].rank == 4
+    assert by_id["player-b"].previous_rank == 5
+    assert by_id["player-b"].movement == Movement.UP
+    assert by_id["player-a"].rank == 5
+    assert by_id["player-a"].previous_rank == 4
+    assert by_id["player-a"].movement == Movement.DOWN
+    assert report.ranking_date == new_date
+
+
+def test_narration_cannot_claim_ranking_changed_from_daily_match_alone(
+    tmp_path: Path,
+) -> None:
+    """Test 3: a normal daily match result (no new official ranking) must
+    never produce narration claiming the player's official ranking
+    changed - no "moves up"/"climbs"/"takes over the No. X spot" wording."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(4, "player-a", "Player A", 5000, ranking_date),
+            _official_ranking(5, "player-b", "Player B", 4800, ranking_date),
+        ]
+    )
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 11))
+
+    win = MatchResult(
+        opponent="Someone",
+        tournament="Cincinnati",
+        round="Final",
+        score="6-4 6-3",
+        won=True,
+        match_date=date(2026, 8, 11),
+    )
+    pipeline._match_provider = _SyntheticMatchProvider(matches={"player-b": win})
+    pipeline.run(date(2026, 8, 12))
+
+    script = (config.output_dir / "2026-08-12" / "script.txt").read_text().lower()
+    forbidden_phrases = [
+        "moves up",
+        "moved up",
+        "move up",
+        "climbs",
+        "climbing",
+        "moves down",
+        "moved down",
+        "falls to",
+        "takes over the no",
+        "rises to",
+        "jumps up",
+        "drops to",
+        "slips to",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in script, f"Unexpected ranking-movement wording {phrase!r} in: {script!r}"
+    # The match itself is still described - only the ranking-movement
+    # claim is forbidden, not the match result.
+    assert "player b" in script or "Player B".lower() in script
+
+
+def test_same_ranking_list_on_consecutive_days_keeps_same_ordering(
+    tmp_path: Path,
+) -> None:
+    """Test 4: running the app on two consecutive days with the same
+    official ranking source must produce the same Top N ordering, while
+    still incorporating new match results into the later day's report."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    rankings = [
+        _official_ranking(4, "player-a", "Player A", 5000, ranking_date),
+        _official_ranking(5, "player-b", "Player B", 4800, ranking_date),
+    ]
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(rankings)
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 10))  # baseline snapshot
+
+    # "Tuesday"
+    pipeline._rankings_provider = _SyntheticRankingsProvider(rankings)
+    pipeline._match_provider = _SyntheticMatchProvider()
+    tuesday_report = pipeline.run(date(2026, 8, 11))
+
+    # "Wednesday" - same official rankings, but Player B has a fresh match result.
+    win = MatchResult(
+        opponent="Someone",
+        tournament="Cincinnati",
+        round="Semifinal",
+        score="7-5 6-2",
+        won=True,
+        match_date=date(2026, 8, 12),
+    )
+    pipeline._rankings_provider = _SyntheticRankingsProvider(rankings)
+    pipeline._match_provider = _SyntheticMatchProvider(matches={"player-b": win})
+    wednesday_report = pipeline.run(date(2026, 8, 13))
+
+    tuesday_order = [p.player_id for p in tuesday_report.players]
+    wednesday_order = [p.player_id for p in wednesday_report.players]
+    assert tuesday_order == wednesday_order == ["player-a", "player-b"]
+
+    tuesday_by_id = {p.player_id: p for p in tuesday_report.players}
+    wednesday_by_id = {p.player_id: p for p in wednesday_report.players}
+    assert tuesday_by_id["player-a"].rank == wednesday_by_id["player-a"].rank == 4
+    assert tuesday_by_id["player-b"].rank == wednesday_by_id["player-b"].rank == 5
+    assert tuesday_by_id["player-a"].movement == Movement.SAME
+    assert tuesday_by_id["player-b"].movement == Movement.SAME
+    assert wednesday_by_id["player-a"].movement == Movement.SAME
+    assert wednesday_by_id["player-b"].movement == Movement.SAME
+
+    # Wednesday's report incorporates the fresh match; Tuesday's does not.
+    assert tuesday_by_id["player-b"].match is None
+    assert wednesday_by_id["player-b"].match == win
+
+
+def test_report_records_the_official_ranking_date(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(1, "player-a", "Player A", 5000, ranking_date),
+            _official_ranking(2, "player-b", "Player B", 4800, ranking_date),
+        ]
+    )
+    pipeline._match_provider = _SyntheticMatchProvider()
+
+    report = pipeline.run(date(2026, 8, 11))
+
+    assert report.ranking_date == ranking_date
+    saved = json.loads((config.output_dir / "2026-08-11" / "report.json").read_text())
+    assert saved["ranking_date"] == "2026-08-10"
+
+
+def test_ranking_date_is_none_for_providers_that_do_not_supply_one(tmp_path: Path) -> None:
+    """The sample/offline provider (and any other provider that doesn't
+    expose a ranking date) must not break anything - report.ranking_date
+    stays None, and movement still falls back to plain rank comparison."""
+
+    config = _make_config(tmp_path)  # uses the sample provider, no ranking_date
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert report.ranking_date is None

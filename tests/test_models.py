@@ -19,6 +19,41 @@ def test_player_ranking_round_trip() -> None:
     )
     restored = PlayerRanking.from_dict(ranking.to_dict())
     assert restored == ranking
+    assert restored.ranking_date is None
+
+
+def test_player_ranking_round_trip_with_ranking_date() -> None:
+    ranking = PlayerRanking(
+        rank=1,
+        player_id="p1",
+        name="Test Player",
+        country_code="USA",
+        points=1000,
+        ranking_date=date(2026, 8, 10),
+    )
+    data = ranking.to_dict()
+    assert data["ranking_date"] == "2026-08-10"
+
+    restored = PlayerRanking.from_dict(data)
+    assert restored == ranking
+    assert restored.ranking_date == date(2026, 8, 10)
+
+
+def test_player_ranking_legacy_data_without_ranking_date_defaults_to_none() -> None:
+    """A rankings-history.json entry written before this field existed must
+    still load fine."""
+
+    legacy_data = {
+        "rank": 1,
+        "player_id": "p1",
+        "name": "Test Player",
+        "country_code": "USA",
+        "points": 1000,
+    }
+
+    restored = PlayerRanking.from_dict(legacy_data)
+
+    assert restored.ranking_date is None
 
 
 def test_match_result_round_trip() -> None:
@@ -157,6 +192,36 @@ def test_daily_report_round_trip() -> None:
     assert len(restored.players) == 1
     assert restored.errors == ["something minor"]
     assert restored.match_target_date == date(2026, 8, 8)
+
+
+def test_daily_report_round_trip_includes_ranking_date() -> None:
+    report = DailyReport(
+        report_date=date(2026, 8, 17),
+        tour="wta",
+        players=[],
+        ranking_date=date(2026, 8, 10),
+    )
+    data = report.to_dict()
+    assert data["ranking_date"] == "2026-08-10"
+
+    restored = DailyReport.from_dict(data)
+    assert restored.ranking_date == date(2026, 8, 10)
+
+
+def test_daily_report_ranking_date_defaults_to_none_for_old_reports() -> None:
+    """report.json files written before this field existed must still load."""
+
+    legacy_data = {
+        "date": "2026-08-09",
+        "tour": "wta",
+        "players": [],
+        "errors": [],
+    }
+
+    restored = DailyReport.from_dict(legacy_data)
+
+    assert restored.ranking_date is None
+    assert restored.to_dict()["ranking_date"] is None
 
 
 def test_daily_report_match_target_date_defaults_to_none_for_old_reports() -> None:

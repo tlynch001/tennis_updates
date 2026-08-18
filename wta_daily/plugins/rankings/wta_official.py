@@ -7,6 +7,7 @@ this data source.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import DataProviderError
@@ -16,6 +17,27 @@ from wta_daily.plugins.registry import rankings_registry
 from wta_daily.plugins.wta_api_client import DEFAULT_BASE_URL, WtaOfficialApiClient
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_ranked_at(raw_value: object) -> date | None:
+    """Parse the upstream API's ``rankedAt`` field (e.g.
+    ``"2026-08-10T00:00:00Z"``) into the official ranking list's
+    publication date.
+
+    Identical for every player in one response (verified live) - it
+    identifies the *list*, not the individual player - so a parse failure
+    here is not fatal to the ranking itself: this just logs a warning and
+    returns ``None`` (the pipeline's existing, pre-``ranking_date``
+    fallback behavior), never raising and never guessing a date.
+    """
+
+    if not raw_value:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw_value).replace("Z", "+00:00")).date()
+    except ValueError:
+        logger.warning("Could not parse ranking publication date %r; leaving it unset.", raw_value)
+        return None
 
 
 @rankings_registry.register("wta_official")
@@ -49,6 +71,7 @@ class WtaOfficialRankingsProvider(RankingsProvider):
                         name=str(player["fullName"]),
                         country_code=str(player.get("countryCode", "")),
                         points=int(entry.get("points", 0)),
+                        ranking_date=_parse_ranked_at(entry.get("rankedAt")),
                     )
                 )
             except (KeyError, TypeError, ValueError) as exc:
