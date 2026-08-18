@@ -18,6 +18,7 @@ import random
 
 from wta_daily.models import FeaturedPlayerReport, Movement
 from wta_daily.scripts_gen import featured_player_phrases as fp
+from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,26 @@ def _finish(sentence: str) -> str:
     return finished[:1].upper() + finished[1:] if finished else finished
 
 
+def _pick_unused_favorite_label(rng: random.Random, used: set[str]) -> str:
+    """Draw an ``AMERICA_FAVORITE_LABELS`` phrase not already used
+    elsewhere in this segment.
+
+    Regression fix: this pool is drawn from independently for the intro
+    sentence and (potentially twice more) for the match sentence, and a
+    plain ``rng.choice`` per call had no memory of earlier picks - a real
+    production script once said "the reigning champion of this show's
+    affections" twice in three sentences purely by chance. Falls back to
+    allowing a repeat only if every label has genuinely already been used
+    (the pool has 9 entries; a segment never needs more than 3), so this
+    can never raise even in a pathologically small/patched pool.
+    """
+
+    available = [label for label in fp.AMERICA_FAVORITE_LABELS if label not in used]
+    choice = rng.choice(available or fp.AMERICA_FAVORITE_LABELS)
+    used.add(choice)
+    return choice
+
+
 def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Random) -> str | None:
     """Return a short narration paragraph for ``featured``, or ``None``.
 
@@ -77,15 +98,20 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     if featured.rank is None:
         return None
 
+    # Tracks every AMERICA_FAVORITE_LABELS phrase already used this
+    # segment, so the intro and the match sentence never land on the same
+    # joke twice - see _pick_unused_favorite_label's docstring.
+    used_labels: set[str] = set()
+
     intro = rng.choice(fp.AMERICA_FAVORITE_INTROS)
-    label = rng.choice(fp.AMERICA_FAVORITE_LABELS)
+    label = _pick_unused_favorite_label(rng, used_labels)
     intro_sentence = f"{intro} {label}, {featured.name}."
 
     status_sentence = _status_sentence(featured, top_n, rng)
 
     parts = [_finish(intro_sentence), _finish(status_sentence)]
 
-    match_sentence = _match_sentence(featured, top_n, rng)
+    match_sentence = _match_sentence(featured, top_n, rng, used_labels)
     if match_sentence:
         parts.append(_finish(match_sentence))
 
@@ -114,33 +140,47 @@ def _status_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Ran
     return f"{featured.name} is {movement_fragment}, and {tier_phrase}"
 
 
-def _match_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Random) -> str | None:
-    favorite = rng.choice(fp.AMERICA_FAVORITE_LABELS)
-
+def _match_sentence(
+    featured: FeaturedPlayerReport, top_n: int, rng: random.Random, used_labels: set[str]
+) -> str | None:
     if featured.match_error:
         return rng.choice(fp.AMERICA_FAVORITE_MATCH_UNKNOWN)
 
     if featured.match is None:
+        favorite = _pick_unused_favorite_label(rng, used_labels)
         return rng.choice(fp.AMERICA_FAVORITE_NO_MATCH).format(favorite=favorite, name=featured.name)
 
     match = featured.match
+    score = format_score_for_narration(match.score)
     if match.won:
+        favorite = _pick_unused_favorite_label(rng, used_labels)
         return rng.choice(fp.AMERICA_FAVORITE_WIN).format(
             favorite=favorite,
             name=featured.name,
             opponent=match.opponent,
-            score=match.score,
+            score=score,
             tournament=match.tournament,
             round=match.round,
         )
 
+    # A loss sentence is composed of two clauses (the result, then a
+    # supportive follow-up) that can *each* independently reference
+    # AMERICA_FAVORITE_LABELS - drawing a fresh, not-yet-used label for
+    # the second clause is what stops the exact same joke phrase from
+    # appearing twice in two consecutive sentences (the reported
+    # production bug). _finish() is applied to *both* clauses (not just
+    # the first) so the seam between them is a real sentence boundary -
+    # capitalized and punctuated - rather than "...7-5,6-2. a temporary
+    # setback..." running two sentences together with a lowercase start.
+    base_favorite = _pick_unused_favorite_label(rng, used_labels)
     base = rng.choice(fp.AMERICA_FAVORITE_LOSS).format(
-        favorite=favorite,
+        favorite=base_favorite,
         name=featured.name,
         opponent=match.opponent,
-        score=match.score,
+        score=score,
         tournament=match.tournament,
         round=match.round,
     )
-    support = rng.choice(fp.AMERICA_FAVORITE_LOSS_SUPPORT).format(favorite=favorite, n=top_n)
-    return f"{_finish(base)} {support}"
+    support_favorite = _pick_unused_favorite_label(rng, used_labels)
+    support = rng.choice(fp.AMERICA_FAVORITE_LOSS_SUPPORT).format(favorite=support_favorite, n=top_n)
+    return f"{_finish(base)} {_finish(support)}"

@@ -463,6 +463,46 @@ raw rank numbers - a second, independent path that bypassed the
 so every "this changed" claim in the app funnels through the one place
 that guarantee lives.
 
+A follow-up narration-quality pass (based on a real production run)
+tightened this further, all within `wta_daily/scripts_gen/`:
+
+- A win/loss sentence may now, occasionally (not for every winning
+  player - see `TemplateScriptGenerator._NEXT_RANKING_NOTE_PROBABILITY`),
+  add one deliberately vague aside that a result *could* matter for the
+  **next** official publication (`phrases.NEXT_RANKING_NOTES`, e.g. "That
+  result could help her case when the next official rankings are
+  released.") - never a specific projected rank/points claim, and never
+  implying the *current* official ranking already reflects it.
+- The points-gap aside (`phrases.POINTS_GAP_TEMPLATES`) is now selective
+  rather than automatic: only gaps of 100 points or fewer are even
+  considered "noteworthy" (real production output was mentioning gaps as
+  large as 354 and 382 points for nearly every player), and even a
+  qualifying gap is only mentioned some of the time
+  (`_POINTS_GAP_MENTION_PROBABILITY`), so it reads as a storyline rather
+  than a required field.
+- The length-padding filler (`phrases.FIFTY_TWO_WEEK_NOTES`) is now a
+  small pool instead of one fixed sentence, and every variant is careful
+  to say the *next* official publication is where this week's results
+  show up - the old single sentence's "so a single result can shuffle
+  several places once a big tournament wraps up" was dropped for
+  implying an automatic update.
+- The featured-player segment's "America's favorite"-style joke labels
+  (`featured_player_phrases.AMERICA_FAVORITE_LABELS`) are now tracked per
+  segment so the exact same nickname can never appear twice in one
+  segment - a real production script once said "the reigning champion of
+  this show's affections" twice in three sentences purely by chance
+  (`featured_player._pick_unused_favorite_label`).
+- A loss sentence's two clauses (the result, then a supportive follow-up)
+  are now both run through the same sentence-finishing helper, fixing a
+  bug where the second clause could start lowercase right after the
+  first's period (a real production script read "...7-5,6-2. a temporary
+  setback...").
+- Match scores substituted into narration sentences now get a space after
+  each set-separating comma (`phrase_utils.format_score_for_narration`,
+  e.g. "6-4,7-6(2)" -> "6-4, 7-6(2)") for readability - display-only; the
+  underlying `MatchResult.score` value used everywhere else (`report.json`,
+  graphics, the YouTube description) is untouched.
+
 ### Projected/live rankings (future feature, not implemented)
 
 A genuinely different, interesting future feature: estimating where
@@ -1775,7 +1815,7 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 365 unit/integration tests cover models (including `DailyReport.match_target_date`,
+Over 385 unit/integration tests cover models (including `DailyReport.match_target_date`,
 `DailyReport.ranking_date`/`PlayerRanking.ranking_date`'s round-trip and
 legacy-data-without-the-field defaulting, and `MatchLookupResult`'s
 confirmed-negative-vs-unresolved distinction, and

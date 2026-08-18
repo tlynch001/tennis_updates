@@ -119,8 +119,43 @@ NO_MATCH: list[str] = [
     "did not take the court yesterday",
 ]
 
+#: Only ever mentioned for genuinely tight gaps (see
+#: TemplateScriptGenerator._points_gap_sentence's threshold) and even then
+#: only some of the time - a points gap is an occasional storyline, not a
+#: field every player's paragraph is required to report. Never implies the
+#: gap changed today; it's always the gap on the *current* official list.
 POINTS_GAP_TEMPLATES: list[str] = [
     "That keeps her just {gap} points behind the player above her.",
     "She now trails number {rank_above} by a slim {gap} points.",
     "It's a tight gap of only {gap} points to the spot just above her.",
+]
+
+#: An occasional, deliberately vague acknowledgment that a win *could*
+#: factor into the *next* official WTA ranking publication - never a
+#: specific projected rank/points claim (that's a separate, not-yet-built
+#: "projected ranking" feature - see the README's "Official ranking vs.
+#: daily match activity" section). Used selectively after a win (see
+#: TemplateScriptGenerator's probability gate), never automatically for
+#: every winning player every day, and never implies the *current*
+#: official ranking already reflects this result.
+NEXT_RANKING_NOTES: list[str] = [
+    "That result could help her case when the next official rankings are released.",
+    "It's exactly the sort of result that could matter once the next official list comes out.",
+    "Results like that tend to add up by the time the next official rankings drop.",
+    "That's the kind of win that could show up on the next official ranking update.",
+]
+
+#: The "why doesn't the ranking always match this week's results" filler
+#: (see TemplateScriptGenerator._pad_to_target_length) - kept as a pool,
+#: not one fixed sentence, so it doesn't become identical daily
+#: boilerplate. Every variant is careful to say the *next* official
+#: publication is where this week's results show up, never that rankings
+#: update automatically once a tournament ends.
+FIFTY_TWO_WEEK_NOTES: list[str] = [
+    "As always, ranking points reflect results over the last fifty-two weeks. This week's "
+    "matches can affect the picture when the next official WTA rankings are released.",
+    "A quick reminder: these rankings reflect a rolling fifty-two-week window. Nothing "
+    "changes officially until the next scheduled WTA ranking update.",
+    "As always, today's points reflect fifty-two weeks of results - the next official "
+    "rankings, whenever they're released, are where this week's matches will actually count.",
 ]
