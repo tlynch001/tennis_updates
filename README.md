@@ -406,6 +406,39 @@ didn't exist before) and through each model's docstring stating plainly
 that these values represent the officially published list and are never
 recalculated from match results.
 
+### Never silently accepting a contradictory fetch
+
+The guarantee above only forces the *`Movement` label* to `SAME` when the
+official list is unchanged - it doesn't, by itself, stop a bad fetch from
+changing what *rank/points* get displayed. `wta_daily.movement.resolve_official_ranking`
+closes that gap: whenever `ranking_date` is confirmed unchanged, a
+previously-tracked player's newly fetched `rank`/`points` are compared
+directly against the previously saved snapshot for that same player. The
+WTA does not amend an already-published ranking, so if they disagree -
+even on a single point total - that's treated as an unreliable fetch, not
+a real (if unannounced) change:
+
+* The previously saved, trusted `rank`/`points` are used instead of the
+  contradictory new ones - for that player's `PlayerReport`, for the
+  overall Top N *ordering* (the whole tracked list is re-sorted by the
+  resolved ranks afterward, so a wobble can never reorder the leaderboard
+  either), and for what gets written back into `rankings-history.json` -
+  the bad values are never allowed to propagate forward into tomorrow's
+  "previous snapshot" either.
+* A clear, specific warning (naming the player and both conflicting
+  values) is logged and added to `report.json`'s `errors` - never
+  silently discarded.
+
+This only ever activates when `same_official_ranking_list` is `True` (both
+dates known and equal) and a previous snapshot entry exists for that
+player - a provider without a ranking date, a genuinely new official
+release, or a player with no prior snapshot are all unaffected, exactly
+as before. See `tests/test_movement.py`'s `resolve_official_ranking`
+tests and `tests/test_pipeline_integration.py::test_unchanged_ranking_date_cannot_change_displayed_top_n_ordering_or_points`
+for the regression coverage (verified to actually fail without this
+guard - a wobbled fetch flips the two players' displayed order - and pass
+with it).
+
 ### Ranking points
 
 If the rankings source provides official points, the app displays exactly
@@ -1742,23 +1775,28 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 360 unit/integration tests cover models (including `DailyReport.match_target_date`,
+Over 365 unit/integration tests cover models (including `DailyReport.match_target_date`,
 `DailyReport.ranking_date`/`PlayerRanking.ranking_date`'s round-trip and
 legacy-data-without-the-field defaulting, and `MatchLookupResult`'s
 confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
 math (including the "unknown" vs "new" distinction, and the
 `same_official_ranking_list` guarantee that a match result can never
-imply a ranking change - `tests/test_movement.py`), the `wta_official`
-rankings provider's `rankedAt` parsing
+imply a ranking change, and `resolve_official_ranking`'s guard against a
+contradictory fetch ever changing displayed rank/points while the
+official list is unchanged - `tests/test_movement.py`), the
+`wta_official` rankings provider's `rankedAt` parsing
 (`tests/test_wta_official_rankings_provider.py`), a dedicated
 "Official ranking vs. daily match activity" scenario suite in
 `tests/test_pipeline_integration.py` (a daily win leaving official ranks
 unchanged, a genuinely new official publication updating them correctly,
-narration never claiming a ranking change from a match alone, and two
+narration never claiming a ranking change from a match alone, two
 consecutive days with the same official list producing the same ordering
-while still picking up fresh match results), country/flag resolution,
-config loading, the plugin registry,
+while still picking up fresh match results, and a regression test -
+verified to actually fail without the fix - proving a contradictory
+fetch can never change the displayed Top N ordering or points while
+`ranking_date` is unchanged), country/flag resolution, config loading,
+the plugin registry,
 snapshot persistence (including the wider-pool-metadata-without-affecting-
 movement-history behavior), the sample providers, `MatchProvider`'s default
 day-first fallback in isolation (`tests/test_match_provider_base.py`), the

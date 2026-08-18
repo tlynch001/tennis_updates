@@ -1133,6 +1133,68 @@ def test_report_records_the_official_ranking_date(tmp_path: Path) -> None:
     assert saved["ranking_date"] == "2026-08-10"
 
 
+def test_unchanged_ranking_date_cannot_change_displayed_top_n_ordering_or_points(
+    tmp_path: Path,
+) -> None:
+    """Regression test: even if a rankings fetch returns numbers that
+    disagree with the previously saved snapshot (a hypothetical transient
+    upstream inconsistency), an unchanged official ranking_date must never
+    let that contradiction change the *displayed* Top N ordering or point
+    totals - not just the Movement label. The app must not silently accept
+    contradictory ranking data; it falls back to the previously saved,
+    trusted values and records a clear warning."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 2
+    ranking_date = date(2026, 8, 10)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(4, "player-a", "Player A", 5000, ranking_date),
+            _official_ranking(5, "player-b", "Player B", 4800, ranking_date),
+        ]
+    )
+    pipeline._match_provider = _SyntheticMatchProvider()
+    pipeline.run(date(2026, 8, 11))  # establishes the trusted baseline snapshot
+
+    # Same ranking_date, but the fetch now (hypothetically) disagrees with
+    # the previously saved snapshot on both rank *and* points, and even
+    # reverses the two players' relative order.
+    pipeline._rankings_provider = _SyntheticRankingsProvider(
+        [
+            _official_ranking(6, "player-a", "Player A", 4790, ranking_date),
+            _official_ranking(3, "player-b", "Player B", 5010, ranking_date),
+        ]
+    )
+    report = pipeline.run(date(2026, 8, 12))
+
+    # Displayed ordering and points must still match the trusted snapshot -
+    # never the contradictory fetch.
+    assert [p.player_id for p in report.players] == ["player-a", "player-b"]
+    by_id = {p.player_id: p for p in report.players}
+    assert by_id["player-a"].rank == 4
+    assert by_id["player-a"].points == 5000
+    assert by_id["player-b"].rank == 5
+    assert by_id["player-b"].points == 4800
+    assert by_id["player-a"].movement == Movement.SAME
+    assert by_id["player-b"].movement == Movement.SAME
+
+    # The contradiction was not silently accepted - it's recorded.
+    assert any("Player A" in e and "official ranking" in e for e in report.errors)
+    assert any("Player B" in e and "official ranking" in e for e in report.errors)
+
+    # The trusted (not contradictory) values are what get persisted for
+    # future comparisons too - the wobble is never allowed to propagate
+    # forward into rankings-history.json.
+    history = json.loads((config.data_dir / "rankings-history.json").read_text())
+    saved_entry = next(e for e in history if e["date"] == "2026-08-12")
+    saved_by_id = {r["player_id"]: r for r in saved_entry["rankings"]}
+    assert saved_by_id["player-a"]["rank"] == 4
+    assert saved_by_id["player-a"]["points"] == 5000
+    assert saved_by_id["player-b"]["rank"] == 5
+    assert saved_by_id["player-b"]["points"] == 4800
+
+
 def test_ranking_date_is_none_for_providers_that_do_not_supply_one(tmp_path: Path) -> None:
     """The sample/offline provider (and any other provider that doesn't
     expose a ranking date) must not break anything - report.ranking_date

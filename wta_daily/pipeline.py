@@ -30,7 +30,12 @@ from wta_daily.models import (
     PlayerRanking,
     PlayerReport,
 )
-from wta_daily.movement import compute_movement, is_same_official_ranking_list, previous_ranks_by_player
+from wta_daily.movement import (
+    compute_movement,
+    is_same_official_ranking_list,
+    previous_ranks_by_player,
+    resolve_official_ranking,
+)
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.persistence.snapshot_store import RankingsSnapshotStore
 from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
@@ -190,6 +195,31 @@ class DailyPipeline:
         else:
             logger.info("Comparing against snapshot from %s.", previous[0].isoformat())
 
+        errors: list[str] = []
+
+        # Defense against a contradictory official-ranking fetch: if
+        # ranking_date is unchanged, a previously-tracked player's
+        # rank/points MUST agree with the previously saved snapshot - the
+        # WTA does not amend an already-published list. A disagreement
+        # here is never silently accepted as if it were a genuine (but
+        # unannounced) change; the previously saved, trusted values are
+        # kept instead, and a clear warning is logged and recorded. This
+        # also guarantees the *ordering* displayed for the Top N can never
+        # shift while the official list is unchanged, not just the
+        # movement label - see resolve_official_ranking's docstring.
+        if same_official_ranking_list and previous_rankings:
+            previous_by_id = {p.player_id: p for p in previous_rankings}
+            resolved_rankings = []
+            for ranking in rankings:
+                resolved, warning = resolve_official_ranking(
+                    ranking, previous_by_id.get(ranking.player_id), same_official_ranking_list=True
+                )
+                if warning:
+                    logger.warning(warning)
+                    errors.append(warning)
+                resolved_rankings.append(resolved)
+            rankings = sorted(resolved_rankings, key=lambda r: r.rank)
+
         # Resolve the featured player's current ranking (if configured)
         # before the match batch call, so she can ride along in that same
         # request instead of triggering one of her own - see
@@ -218,7 +248,6 @@ class DailyPipeline:
             )
 
         players: list[PlayerReport] = []
-        errors: list[str] = []
         if batch_error:
             errors.append(batch_error)
         for ranking in rankings:
