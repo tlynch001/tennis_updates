@@ -30,7 +30,12 @@ from wta_daily.models import (
     PlayerRanking,
     PlayerReport,
 )
-from wta_daily.movement import compute_movement, previous_ranks_by_player
+from wta_daily.movement import (
+    compute_movement,
+    is_same_official_ranking_list,
+    previous_ranks_by_player,
+    resolve_official_ranking,
+)
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.persistence.snapshot_store import RankingsSnapshotStore
 from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
@@ -143,18 +148,77 @@ class DailyPipeline:
         pool: list[PlayerRanking] = self._rankings_provider.get_top_n(pool_size)
         self.last_rankings_pool = pool
         rankings: list[PlayerRanking] = pool[: self._config.top_n]
-        logger.info("Retrieved %d rankings (%d tracked).", len(pool), len(rankings))
+        logger.info(
+            "Retrieved %d official ranked players (%d tracked for this report).", len(pool), len(rankings)
+        )
+
+        # The publication date of the official WTA ranking list this whole
+        # run is based on (see PlayerRanking.ranking_date's docstring) -
+        # identical across every entry in `pool`, so any tracked player's
+        # value represents the whole list. `None` for a provider that
+        # doesn't expose one (e.g. the offline `sample` fixture).
+        current_ranking_date = rankings[0].ranking_date if rankings else None
+        if current_ranking_date is not None:
+            logger.info("Using official WTA ranking dated %s", current_ranking_date.isoformat())
 
         previous = self._snapshot_store.get_previous_snapshot(report_date, self._config.tour)
         has_previous_snapshot = previous is not None
-        previous_ranks = previous_ranks_by_player(previous[1] if previous else None)
+        previous_rankings = previous[1] if previous else None
+        previous_ranks = previous_ranks_by_player(previous_rankings)
+        previous_ranking_date = previous_rankings[0].ranking_date if previous_rankings else None
+        # The single guarantee this whole feature exists for: a match
+        # result must never be able to make the app report a ranking
+        # change - only an actual new official ranking publication can.
+        # See wta_daily.movement.is_same_official_ranking_list's docstring
+        # for why this is False (not "assumed same") whenever either date
+        # is unknown.
+        same_official_ranking_list = is_same_official_ranking_list(
+            current_ranking_date, previous_ranking_date
+        )
+
         if previous is None:
             logger.info(
                 "No previous snapshot found; this looks like the first run for this tour. "
                 "Movement will be reported as 'unknown' rather than 'new' for every player."
             )
+        elif same_official_ranking_list:
+            logger.info(
+                "Official ranking list unchanged since previous run (still dated %s).",
+                current_ranking_date.isoformat() if current_ranking_date else "unknown",
+            )
+        elif current_ranking_date is not None and previous_ranking_date is not None:
+            logger.info(
+                "New official WTA ranking published (previous: %s, now: %s).",
+                previous_ranking_date.isoformat(),
+                current_ranking_date.isoformat(),
+            )
         else:
             logger.info("Comparing against snapshot from %s.", previous[0].isoformat())
+
+        errors: list[str] = []
+
+        # Defense against a contradictory official-ranking fetch: if
+        # ranking_date is unchanged, a previously-tracked player's
+        # rank/points MUST agree with the previously saved snapshot - the
+        # WTA does not amend an already-published list. A disagreement
+        # here is never silently accepted as if it were a genuine (but
+        # unannounced) change; the previously saved, trusted values are
+        # kept instead, and a clear warning is logged and recorded. This
+        # also guarantees the *ordering* displayed for the Top N can never
+        # shift while the official list is unchanged, not just the
+        # movement label - see resolve_official_ranking's docstring.
+        if same_official_ranking_list and previous_rankings:
+            previous_by_id = {p.player_id: p for p in previous_rankings}
+            resolved_rankings = []
+            for ranking in rankings:
+                resolved, warning = resolve_official_ranking(
+                    ranking, previous_by_id.get(ranking.player_id), same_official_ranking_list=True
+                )
+                if warning:
+                    logger.warning(warning)
+                    errors.append(warning)
+                resolved_rankings.append(resolved)
+            rankings = sorted(resolved_rankings, key=lambda r: r.rank)
 
         # Resolve the featured player's current ranking (if configured)
         # before the match batch call, so she can ride along in that same
@@ -167,6 +231,10 @@ class DailyPipeline:
 
         match_target_date = report_date - timedelta(days=self._config.match_target_date_offset_days)
         logger.info("Downloading matches completed on %s...", match_target_date.isoformat())
+        logger.debug(
+            "Processing daily match activity separately from official rankings - "
+            "match results affect narration only, never rank/points/movement."
+        )
         match_batch = list(rankings)
         tracked_ids = {r.player_id for r in rankings}
         if featured_ranking is not None and featured_ranking.player_id not in tracked_ids:
@@ -180,13 +248,15 @@ class DailyPipeline:
             )
 
         players: list[PlayerReport] = []
-        errors: list[str] = []
         if batch_error:
             errors.append(batch_error)
         for ranking in rankings:
             previous_rank = previous_ranks.get(ranking.player_id)
             movement = compute_movement(
-                ranking.rank, previous_rank, has_previous_snapshot=has_previous_snapshot
+                ranking.rank,
+                previous_rank,
+                has_previous_snapshot=has_previous_snapshot,
+                same_official_ranking_list=same_official_ranking_list,
             )
             match = matches_by_player.get(ranking.player_id)
             if match is None:
@@ -214,6 +284,7 @@ class DailyPipeline:
                 batch_error,
                 report_date,
                 has_previous_snapshot,
+                same_official_ranking_list,
             )
             if featured_build_error:
                 errors.append(featured_build_error)
@@ -242,6 +313,7 @@ class DailyPipeline:
             errors=errors,
             match_target_date=match_target_date,
             featured_player=featured_player_report,
+            ranking_date=current_ranking_date,
         )
 
     def _safe_get_matches_for_date(
@@ -344,6 +416,7 @@ class DailyPipeline:
         batch_error: str | None,
         report_date: date,
         has_previous_snapshot: bool,
+        same_official_ranking_list: bool,
     ) -> tuple[FeaturedPlayerReport, str | None]:
         """Build the featured-player section of the report, isolating any
         unexpected failure so it can never break the rest of the pipeline -
@@ -368,7 +441,10 @@ class DailyPipeline:
                 report_date, self._config.tour, ranking.player_id
             )
             movement = compute_movement(
-                ranking.rank, previous_rank, has_previous_snapshot=has_previous_snapshot
+                ranking.rank,
+                previous_rank,
+                has_previous_snapshot=has_previous_snapshot,
+                same_official_ranking_list=same_official_ranking_list,
             )
             return (
                 FeaturedPlayerReport(

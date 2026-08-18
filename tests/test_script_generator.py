@@ -100,7 +100,9 @@ def test_generate_respects_target_length_padding() -> None:
 
     # With an unreachable target (20 minutes for 1 player), the generator
     # should still terminate and add its filler note rather than looping.
-    assert "ranking points reflect performance" in script
+    # The exact wording varies (see phrases.FIFTY_TWO_WEEK_NOTES), so check
+    # for the substring every variant shares.
+    assert "fifty-two weeks" in script
 
 
 def _last_nonblank_paragraph(script: str) -> str:
@@ -127,12 +129,12 @@ def test_sign_off_is_last_even_when_padding_is_added() -> None:
     report = _sample_report([Movement.SAME])
     script = TemplateScriptGenerator(script_config=config).generate(report)
 
-    assert "ranking points reflect performance" in script
+    assert "fifty-two weeks" in script
     last_paragraph = _last_nonblank_paragraph(script)
     possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
     assert last_paragraph in possible_closers
     # The filler text must appear strictly before the sign-off in the script.
-    assert script.index("ranking points reflect performance") < script.index(last_paragraph)
+    assert script.index("fifty-two weeks") < script.index(last_paragraph)
 
 
 def test_unknown_movement_never_uses_new_entrant_language() -> None:
@@ -255,6 +257,166 @@ def test_first_story_connector_pool_never_presupposes_a_previous_story() -> None
     combined_later_pool = " ".join(phrases.CONNECTORS).lower()
     assert "elsewhere" in combined_later_pool
     assert "meanwhile" in combined_later_pool
+
+
+# --- Narration polish: selective point-gap commentary -----------------------
+
+
+def _report_with_points(points_list: list[int], report_date: date) -> DailyReport:
+    players = [
+        PlayerReport(
+            rank=i,
+            name=f"Player {i}",
+            player_id=f"p{i}",
+            country_code="USA",
+            points=points,
+            movement=Movement.SAME,
+            previous_rank=i,
+        )
+        for i, points in enumerate(points_list, start=1)
+    ]
+    return DailyReport(report_date=report_date, tour="wta", players=players)
+
+
+def test_large_point_gaps_are_never_mentioned() -> None:
+    """Gaps like 354/275 points (real production examples) are not
+    'genuinely noteworthy' - they must never be narrated."""
+
+    points = [10000, 9646, 9371]  # consecutive gaps: 354, 275
+    start = date(2026, 8, 1)
+    for offset in range(30):
+        report = _report_with_points(points, start + timedelta(days=offset))
+        script = TemplateScriptGenerator().generate(report)
+        assert "354 points" not in script
+        assert "275 points" not in script
+
+
+def test_small_point_gaps_are_mentioned_sometimes_but_not_every_time() -> None:
+    """Genuinely tight gaps (32/96 points, also real production examples)
+    are an occasional storyline, not a guaranteed mention every single
+    time the data qualifies - see _POINTS_GAP_MENTION_PROBABILITY."""
+
+    points = [10000, 9968, 9872]  # consecutive gaps: 32, 96
+    start = date(2026, 8, 1)
+    mentioned = 0
+    total = 50
+    for offset in range(total):
+        report = _report_with_points(points, start + timedelta(days=offset))
+        script = TemplateScriptGenerator().generate(report)
+        if "32 points" in script or "96 points" in script:
+            mentioned += 1
+
+    assert 0 < mentioned < total
+
+
+def test_point_gap_mention_never_exceeds_the_noteworthy_threshold() -> None:
+    """Whenever a gap sentence does appear, it must always be for a gap at
+    or below the noteworthy threshold - never one of the large gaps."""
+
+    points = [10000, 9646, 9614]  # gaps: 354 (skip), 32 (candidate)
+    start = date(2026, 8, 1)
+    for offset in range(40):
+        report = _report_with_points(points, start + timedelta(days=offset))
+        script = TemplateScriptGenerator().generate(report)
+        assert "354 points" not in script
+
+
+# --- Narration polish: next-official-ranking acknowledgment -----------------
+
+
+def test_win_sometimes_acknowledges_the_next_official_ranking_but_never_projects_one() -> None:
+    report = _sample_report([Movement.SAME, Movement.SAME])  # player 2 (i=2) wins
+    start = date(2026, 8, 1)
+    mentioned = 0
+    total = 60
+    for offset in range(total):
+        dated_report = DailyReport(
+            report_date=start + timedelta(days=offset), tour="wta", players=report.players
+        )
+        script = TemplateScriptGenerator().generate(dated_report)
+        lowered = script.lower()
+        if "next official" in lowered:
+            mentioned += 1
+        # Never a specific projected rank/points claim.
+        assert "projected" not in lowered
+        assert "moves her to number" not in lowered
+        assert "this moves her" not in lowered
+
+    assert 0 < mentioned < total
+
+
+def test_next_official_ranking_note_never_implies_the_current_ranking_changed() -> None:
+    """The note may only ever be about the *next* publication - never
+    phrased as if today's official ranking already reflects the win."""
+
+    for phrase in phrases.NEXT_RANKING_NOTES:
+        lowered = phrase.lower()
+        assert "next official" in lowered
+        assert "moves her" not in lowered
+        assert "now ranked" not in lowered
+
+
+# --- Narration polish: score formatting for narration ------------------------
+
+
+def test_match_score_gets_a_space_after_the_comma_in_narration() -> None:
+    match = MatchResult(
+        opponent="Opponent",
+        tournament="Test Open",
+        round="Final",
+        score="6-4,7-6(2)",
+        won=True,
+        match_date=date(2026, 8, 8),
+    )
+    player = PlayerReport(
+        rank=1,
+        name="Player One",
+        player_id="p1",
+        country_code="USA",
+        points=1000,
+        movement=Movement.SAME,
+        previous_rank=1,
+        match=match,
+    )
+    report = DailyReport(report_date=date(2026, 8, 9), tour="wta", players=[player])
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "6-4, 7-6(2)" in script
+    assert "6-4,7-6(2)" not in script
+
+
+# --- Narration polish: variable, PR-#10-consistent 52-week filler -----------
+
+
+def test_fifty_two_week_filler_never_implies_automatic_ranking_updates() -> None:
+    config = ScriptConfig(target_minutes_low=20, words_per_minute=150)
+    report = _sample_report([Movement.SAME])
+
+    script = TemplateScriptGenerator(script_config=config).generate(report)
+
+    assert "fifty-two weeks" in script
+    # The old wording implied a result itself reshuffles the rankings.
+    assert "can shuffle several places" not in script.lower()
+    assert "once a big tournament wraps up" not in script.lower()
+
+
+def test_fifty_two_week_filler_wording_varies_across_days() -> None:
+    config = ScriptConfig(target_minutes_low=20, words_per_minute=150)
+    report = _sample_report([Movement.SAME])
+    start = date(2026, 8, 1)
+
+    variants_seen = set()
+    for offset in range(20):
+        dated_report = DailyReport(
+            report_date=start + timedelta(days=offset), tour="wta", players=report.players
+        )
+        script = TemplateScriptGenerator(script_config=config).generate(dated_report)
+        for note in phrases.FIFTY_TWO_WEEK_NOTES:
+            if note in script:
+                variants_seen.add(note)
+
+    assert len(variants_seen) >= 2
 
 
 def test_no_featured_player_produces_no_extra_content() -> None:

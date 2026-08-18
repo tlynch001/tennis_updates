@@ -89,6 +89,7 @@ def test_includes_featured_player_when_configured_and_resolved() -> None:
         tagline="america_favorite",
         rank=28,
         previous_rank=30,
+        movement=Movement.UP,
         match=_match(won=True, opponent="Anhelina Kalinina", tournament="Cincinnati"),
     )
     report = _report([_player(1, "Player One")], featured=featured)
@@ -99,6 +100,29 @@ def test_includes_featured_player_when_configured_and_resolved() -> None:
     assert "No. 28" in description
     assert "up from No. 30" in description
     assert "Anhelina Kalinina" in description
+
+
+def test_featured_player_direction_annotation_requires_up_or_down_movement() -> None:
+    """The '(up from/down from No. Y)' annotation must come from the
+    already-computed Movement, never from independently comparing raw rank
+    numbers - a rank/previous_rank mismatch with movement=SAME (e.g. an
+    official ranking list that hasn't changed) must never be annotated as
+    if it were a genuine change."""
+
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="emma",
+        tagline="america_favorite",
+        rank=28,
+        previous_rank=30,
+        movement=Movement.SAME,
+    )
+    report = _report([_player(1, "Player One")], featured=featured)
+
+    description = generate_description(report)
+
+    assert "up from" not in description
+    assert "down from" not in description
 
 
 def test_omits_featured_player_section_when_not_configured() -> None:

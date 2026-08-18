@@ -110,6 +110,27 @@ def test_featured_player_enabled_without_name_raises(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_rankings_config_projected_disabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.rankings.projected_rankings_enabled is False
+
+
+def test_rankings_config_projected_enabled_raises(tmp_path: Path) -> None:
+    """Projected/live rankings are a reserved future feature, not yet
+    implemented - enabling the flag must fail loudly, never silently do
+    nothing."""
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("rankings:\n  projected_rankings_enabled: true\n", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="not implemented"):
+        load_config(config_path)
+
+
 def test_publishing_config_enabled_by_default(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("top_n: 10\n", encoding="utf-8")

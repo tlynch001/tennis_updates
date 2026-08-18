@@ -9,9 +9,11 @@ requirements from the feature brief.
 from __future__ import annotations
 
 import random
+import re
 from datetime import date
 
 from wta_daily.models import FeaturedPlayerReport, MatchResult, Movement
+from wta_daily.scripts_gen import featured_player_phrases as fp
 from wta_daily.scripts_gen.featured_player import build_segment
 
 TOP_N = 10
@@ -236,6 +238,83 @@ def test_produces_substantial_variation_across_many_days() -> None:
     # 28 distinct day-seeds should produce well more than a couple of
     # unique paragraphs if the phrase pools are doing their job.
     assert len(outputs) >= 15
+
+
+# --- Narration polish: no repeated joke phrase within one segment ----------
+
+
+def test_favorite_label_never_repeats_within_one_loss_segment() -> None:
+    """Regression test for a real production script that said 'the
+    reigning champion of this show's affections' twice in three
+    sentences: a loss segment draws up to three AMERICA_FAVORITE_LABELS
+    phrases (intro, the loss clause, the supportive follow-up clause) -
+    none of them may repeat verbatim within the same segment."""
+
+    featured = _featured(rank=28, match=_match(won=False, opponent="Someone", score="7-5 6-2"))
+    for i in range(80):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"label-repeat-{i}"))
+        assert segment is not None
+        for label in fp.AMERICA_FAVORITE_LABELS:
+            assert segment.count(label) <= 1, f"{label!r} appeared more than once in: {segment!r}"
+
+
+def test_favorite_label_never_repeats_within_one_win_segment() -> None:
+    featured = _featured(rank=28, match=_match(won=True, opponent="Someone", score="6-3 6-2"))
+    for i in range(80):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"win-label-repeat-{i}"))
+        assert segment is not None
+        for label in fp.AMERICA_FAVORITE_LABELS:
+            assert segment.count(label) <= 1, f"{label!r} appeared more than once in: {segment!r}"
+
+
+def test_favorite_label_never_repeats_with_no_match() -> None:
+    featured = _featured(rank=28, match=None)
+    for i in range(60):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"no-match-label-{i}"))
+        assert segment is not None
+        for label in fp.AMERICA_FAVORITE_LABELS:
+            assert segment.count(label) <= 1, f"{label!r} appeared more than once in: {segment!r}"
+
+
+# --- Narration polish: sentence-boundary/capitalization ---------------------
+
+
+def test_loss_segment_never_has_a_lowercase_sentence_start_after_a_period() -> None:
+    """Regression test for a real production script that read
+    '...7-5,6-2. a temporary setback...' - a lowercase letter immediately
+    following a sentence-ending period. Tolerates '.' inside a score/number
+    (e.g. abbreviations) only by checking specifically for '. ' followed
+    by a lowercase letter, the exact shape of the reported bug."""
+
+    lowercase_after_period = re.compile(r"\.\s+[a-z]")
+    featured = _featured(rank=28, match=_match(won=False, opponent="Someone", score="7-5 6-2"))
+    for i in range(80):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"sentence-boundary-{i}"))
+        assert segment is not None
+        match_found = lowercase_after_period.search(segment)
+        assert match_found is None, f"Found a lowercase sentence start in: {segment!r}"
+
+
+def test_win_segment_never_has_a_lowercase_sentence_start_after_a_period() -> None:
+    lowercase_after_period = re.compile(r"\.\s+[a-z]")
+    featured = _featured(rank=28, match=_match(won=True, opponent="Someone", score="6-3 6-2"))
+    for i in range(80):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"win-sentence-boundary-{i}"))
+        assert segment is not None
+        assert lowercase_after_period.search(segment) is None
+
+
+# --- Narration polish: score formatting for narration ------------------------
+
+
+def test_featured_player_match_score_gets_a_space_after_the_comma() -> None:
+    featured = _featured(rank=28, match=_match(won=True, opponent="Someone", score="6-4,7-6(2)"))
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("score-format"))
+
+    assert segment is not None
+    assert "6-4, 7-6(2)" in segment
+    assert "6-4,7-6(2)" not in segment
 
 
 def test_hearts_joke_appears_sometimes_but_not_every_day() -> None:

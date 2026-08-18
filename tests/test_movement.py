@@ -1,7 +1,27 @@
 from __future__ import annotations
 
+from datetime import date
+
 from wta_daily.models import Movement, PlayerRanking
-from wta_daily.movement import compute_movement, previous_ranks_by_player
+from wta_daily.movement import (
+    compute_movement,
+    is_same_official_ranking_list,
+    previous_ranks_by_player,
+    resolve_official_ranking,
+)
+
+
+def _ranking(
+    rank: int, points: int, ranking_date: date | None = None, player_id: str = "p1"
+) -> PlayerRanking:
+    return PlayerRanking(
+        rank=rank,
+        player_id=player_id,
+        name="Test Player",
+        country_code="USA",
+        points=points,
+        ranking_date=ranking_date,
+    )
 
 
 def test_compute_movement_up() -> None:
@@ -44,6 +64,187 @@ def test_compute_movement_unknown_ignores_previous_rank_value() -> None:
         compute_movement(current_rank=1, previous_rank=1, has_previous_snapshot=False)
         == Movement.UNKNOWN
     )
+
+
+# --- Official ranking list awareness (same_official_ranking_list) ----------
+
+
+def test_is_same_official_ranking_list_true_when_dates_match() -> None:
+    assert is_same_official_ranking_list(date(2026, 8, 10), date(2026, 8, 10)) is True
+
+
+def test_is_same_official_ranking_list_false_when_dates_differ() -> None:
+    assert is_same_official_ranking_list(date(2026, 8, 17), date(2026, 8, 10)) is False
+
+
+def test_is_same_official_ranking_list_false_when_current_date_unknown() -> None:
+    assert is_same_official_ranking_list(None, date(2026, 8, 10)) is False
+
+
+def test_is_same_official_ranking_list_false_when_previous_date_unknown() -> None:
+    assert is_same_official_ranking_list(date(2026, 8, 10), None) is False
+
+
+def test_is_same_official_ranking_list_false_when_both_dates_unknown() -> None:
+    """Unknown must never be treated as 'assumed same' - see the module
+    docstring for why (a provider without ranking dates, like `sample`,
+    must fall back to plain rank-number comparison, not skip movement
+    entirely)."""
+
+    assert is_same_official_ranking_list(None, None) is False
+
+
+def test_compute_movement_forces_same_when_same_official_ranking_list_even_if_ranks_differ() -> None:
+    """The core guarantee: once the current and previous fetch are
+    confirmed to be the identical published ranking list, movement must be
+    SAME for a previously-tracked player - even in the hypothetical case
+    the raw numbers disagree (a defensive guarantee against transient
+    upstream inconsistencies, not something that should happen with a
+    well-behaved source)."""
+
+    movement = compute_movement(
+        current_rank=2,
+        previous_rank=4,
+        has_previous_snapshot=True,
+        same_official_ranking_list=True,
+    )
+
+    assert movement == Movement.SAME
+
+
+def test_compute_movement_still_computes_up_down_when_ranking_list_differs() -> None:
+    """A genuine new official ranking release (same_official_ranking_list is
+    False) must still classify movement normally from the rank numbers."""
+
+    assert (
+        compute_movement(
+            current_rank=2, previous_rank=4, has_previous_snapshot=True, same_official_ranking_list=False
+        )
+        == Movement.UP
+    )
+    assert (
+        compute_movement(
+            current_rank=5, previous_rank=2, has_previous_snapshot=True, same_official_ranking_list=False
+        )
+        == Movement.DOWN
+    )
+
+
+def test_compute_movement_same_official_ranking_list_defaults_to_false() -> None:
+    """Every pre-existing call site (not yet passing this keyword) must
+    behave exactly as before - purely numeric comparison."""
+
+    assert compute_movement(current_rank=2, previous_rank=4, has_previous_snapshot=True) == Movement.UP
+
+
+def test_compute_movement_same_official_ranking_list_does_not_override_new() -> None:
+    """A player genuinely absent from the previous snapshot is still NEW,
+    even if same_official_ranking_list happens to be True (e.g. top_n was
+    widened this run) - the override only ever clamps UP/DOWN to SAME."""
+
+    movement = compute_movement(
+        current_rank=9,
+        previous_rank=None,
+        has_previous_snapshot=True,
+        same_official_ranking_list=True,
+    )
+
+    assert movement == Movement.NEW
+
+
+def test_compute_movement_same_official_ranking_list_does_not_override_unknown() -> None:
+    movement = compute_movement(
+        current_rank=1,
+        previous_rank=None,
+        has_previous_snapshot=False,
+        same_official_ranking_list=True,
+    )
+
+    assert movement == Movement.UNKNOWN
+
+
+# --- resolve_official_ranking (contradictory-fetch guard) ------------------
+
+
+def test_resolve_official_ranking_noop_when_no_previous() -> None:
+    current = _ranking(3, 5000, date(2026, 8, 10))
+
+    resolved, warning = resolve_official_ranking(current, None, same_official_ranking_list=True)
+
+    assert resolved == current
+    assert warning is None
+
+
+def test_resolve_official_ranking_noop_when_lists_differ() -> None:
+    """Even if the numbers happen to differ, this check only applies when
+    both sides confidently claim to be the *same* official list."""
+
+    current = _ranking(3, 5000, date(2026, 8, 17))
+    previous = _ranking(4, 4800, date(2026, 8, 10))
+
+    resolved, warning = resolve_official_ranking(current, previous, same_official_ranking_list=False)
+
+    assert resolved == current
+    assert warning is None
+
+
+def test_resolve_official_ranking_noop_when_values_agree() -> None:
+    current = _ranking(4, 5000, date(2026, 8, 10))
+    previous = _ranking(4, 5000, date(2026, 8, 10))
+
+    resolved, warning = resolve_official_ranking(current, previous, same_official_ranking_list=True)
+
+    assert resolved == current
+    assert warning is None
+
+
+def test_resolve_official_ranking_detects_rank_contradiction() -> None:
+    """Same official list, but the fetched rank disagrees with the
+    previously saved snapshot - never silently accepted."""
+
+    current = _ranking(3, 5000, date(2026, 8, 10))
+    previous = _ranking(4, 5000, date(2026, 8, 10))
+
+    resolved, warning = resolve_official_ranking(current, previous, same_official_ranking_list=True)
+
+    assert resolved.rank == 4  # the previously saved, trusted value
+    assert resolved.points == 5000
+    assert warning is not None
+    assert "Test Player" in warning
+    assert "#4" in warning and "#3" in warning
+
+
+def test_resolve_official_ranking_detects_points_contradiction() -> None:
+    current = _ranking(4, 5010, date(2026, 8, 10))
+    previous = _ranking(4, 5000, date(2026, 8, 10))
+
+    resolved, warning = resolve_official_ranking(current, previous, same_official_ranking_list=True)
+
+    assert resolved.rank == 4
+    assert resolved.points == 5000  # the previously saved value, not the wobbled one
+    assert warning is not None
+
+
+def test_resolve_official_ranking_preserves_identity_fields() -> None:
+    """Only rank/points are ever overridden - player identity and the
+    ranking_date actually fetched are left exactly as-is."""
+
+    current = PlayerRanking(
+        rank=3,
+        player_id="emma",
+        name="Emma Navarro",
+        country_code="USA",
+        points=5000,
+        ranking_date=date(2026, 8, 10),
+    )
+    previous = _ranking(4, 5000, date(2026, 8, 10), player_id="emma")
+
+    resolved, _warning = resolve_official_ranking(current, previous, same_official_ranking_list=True)
+
+    assert resolved.player_id == "emma"
+    assert resolved.name == "Emma Navarro"
+    assert resolved.country_code == "USA"
+    assert resolved.ranking_date == date(2026, 8, 10)
 
 
 def test_previous_ranks_by_player_builds_lookup() -> None:

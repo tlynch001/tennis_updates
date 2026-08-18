@@ -30,6 +30,7 @@ what's next.
 ## Table of contents
 
 - [Data source research & recommendation](#data-source-research--recommendation)
+- [Official ranking vs. daily match activity](#official-ranking-vs-daily-match-activity)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
 - [Slide timing synchronization](#slide-timing-synchronization)
@@ -335,6 +336,207 @@ before taking the calendar date, and "yesterday" is defined project-wide as
 **UTC calendar yesterday relative to when the job runs** - deterministic
 and reproducible regardless of which tournament's timezone a match was
 actually played in.
+
+## Official ranking vs. daily match activity
+
+**The WTA does not recalculate its official ranking after every match.**
+Players earn ranking points during a tournament, but the published
+ranking list only updates on the WTA's own weekly publication schedule -
+during an ongoing event, a player's official rank stays whatever the
+current published list says, regardless of what she does that week. This
+project's core architectural rule follows directly from that fact:
+
+> **A player winning (or losing) a match must never, by itself, change the
+> official Top N ranking order this app reports. Only an actual new
+> official WTA ranking publication can do that.**
+
+### The three concepts this project keeps separate
+
+1. **Official ranking** - "#1 Aryna Sabalenka," "#3 Coco Gauff." Comes
+   from `rankings_provider` (see above) and stays fixed until a newer
+   official list is published. Every place in the app that says a player
+   is "No. 1"/"No. 4" refers to this, unless explicitly labeled otherwise.
+2. **Daily match activity** - "Coco Gauff, currently ranked No. 3,
+   defeated X yesterday." Comes from `match_provider` and affects the
+   day's *narration* (win/loss, opponent, score, tournament), never the
+   ranking numbers.
+3. **Projected/live ranking** *(not implemented - reserved for the
+   future)* - an estimate of where in-progress tournament points might
+   place a player on the *next* official list. See "Projected/live
+   rankings" below for why this is deliberately not built yet, and how it
+   would be labeled if it ever is.
+
+### How this is enforced, not just assumed
+
+`PlayerRanking.ranking_date` (`wta_daily/models.py`) carries the
+publication date of the official list a rank/points value came from -
+populated by `wta_official` from the upstream API's own `rankedAt` field
+(present on every entry, identical across a whole response - confirmed
+live: fetching the Top 10 twice in the same week returns the exact same
+`rankedAt`, points, and ranks both times). `wta_daily.movement.compute_movement`
+takes a `same_official_ranking_list` flag: whenever the current fetch and
+the most recent saved snapshot are confirmed to be the *identical*
+published list (`ranking_date` matches), movement is forced to `SAME` for
+every previously-tracked player - **regardless of what the raw rank
+numbers say**. This is deliberately defensive: the numbers *should*
+already agree whenever the official list hasn't changed (that's what
+"official" means), but a match result must never be able to produce
+"moved up"/"moved down" narration, even in the face of a hypothetical
+transient upstream inconsistency. `ranking_date` is `None` for a provider
+that doesn't expose one (e.g. the offline `sample` fixture); in that case
+the app safely falls back to comparing rank numbers directly, exactly as
+it always has.
+
+A genuinely new official publication (`ranking_date` differs from the
+previous snapshot's) is treated completely differently - movement is then
+computed normally from the rank numbers, and is expected to actually
+change. See `tests/test_movement.py` and
+`tests/test_pipeline_integration.py`'s "Official ranking vs. daily match
+activity" section for the full regression suite, including the specific
+scenario of a match win with an unchanged official list, a genuinely new
+official list, and two consecutive days with the same list producing the
+same ordering while still picking up fresh match results.
+
+**Not a full rename.** `PlayerRanking`/`PlayerReport`/`FeaturedPlayerReport`
+still use `rank`/`points` rather than `official_rank`/`official_ranking_points`
+- renaming every reference across graphics, narration templates, and
+`report.json`'s schema would be significant, purely cosmetic churn. The
+distinction is made explicit instead through `ranking_date` (a field that
+didn't exist before) and through each model's docstring stating plainly
+that these values represent the officially published list and are never
+recalculated from match results.
+
+### Never silently accepting a contradictory fetch
+
+The guarantee above only forces the *`Movement` label* to `SAME` when the
+official list is unchanged - it doesn't, by itself, stop a bad fetch from
+changing what *rank/points* get displayed. `wta_daily.movement.resolve_official_ranking`
+closes that gap: whenever `ranking_date` is confirmed unchanged, a
+previously-tracked player's newly fetched `rank`/`points` are compared
+directly against the previously saved snapshot for that same player. The
+WTA does not amend an already-published ranking, so if they disagree -
+even on a single point total - that's treated as an unreliable fetch, not
+a real (if unannounced) change:
+
+* The previously saved, trusted `rank`/`points` are used instead of the
+  contradictory new ones - for that player's `PlayerReport`, for the
+  overall Top N *ordering* (the whole tracked list is re-sorted by the
+  resolved ranks afterward, so a wobble can never reorder the leaderboard
+  either), and for what gets written back into `rankings-history.json` -
+  the bad values are never allowed to propagate forward into tomorrow's
+  "previous snapshot" either.
+* A clear, specific warning (naming the player and both conflicting
+  values) is logged and added to `report.json`'s `errors` - never
+  silently discarded.
+
+This only ever activates when `same_official_ranking_list` is `True` (both
+dates known and equal) and a previous snapshot entry exists for that
+player - a provider without a ranking date, a genuinely new official
+release, or a player with no prior snapshot are all unaffected, exactly
+as before. See `tests/test_movement.py`'s `resolve_official_ranking`
+tests and `tests/test_pipeline_integration.py::test_unchanged_ranking_date_cannot_change_displayed_top_n_ordering_or_points`
+for the regression coverage (verified to actually fail without this
+guard - a wobbled fetch flips the two players' displayed order - and pass
+with it).
+
+### Ranking points
+
+If the rankings source provides official points, the app displays exactly
+those - it never adds a match's ranking points on top of the official
+total (confirmed by inspection: no code in `wta_daily/plugins/matches/`
+touches `points` at all; match results and ranking data are fetched
+through entirely separate provider interfaces and never merged at that
+level).
+
+### Narration wording
+
+Because `movement` already carries the guarantee above, the narration
+generator (`wta_daily/scripts_gen/template_generator.py`) and the
+featured-player segment (`wta_daily/scripts_gen/featured_player.py`) both
+describe ranking status and match results in **separate sentences**,
+driven by two independent fields (`player.movement` and `player.match`):
+a phrase like "climbs to world number {rank}" only ever gets selected when
+`movement` is genuinely `UP`. `youtube_description.py`'s featured-player
+"(up from No. Y)" annotation was previously computed by directly comparing
+raw rank numbers - a second, independent path that bypassed the
+`same_official_ranking_list` guarantee - and now reads `movement` instead,
+so every "this changed" claim in the app funnels through the one place
+that guarantee lives.
+
+A follow-up narration-quality pass (based on a real production run)
+tightened this further, all within `wta_daily/scripts_gen/`:
+
+- A win/loss sentence may now, occasionally (not for every winning
+  player - see `TemplateScriptGenerator._NEXT_RANKING_NOTE_PROBABILITY`),
+  add one deliberately vague aside that a result *could* matter for the
+  **next** official publication (`phrases.NEXT_RANKING_NOTES`, e.g. "That
+  result could help her case when the next official rankings are
+  released.") - never a specific projected rank/points claim, and never
+  implying the *current* official ranking already reflects it.
+- The points-gap aside (`phrases.POINTS_GAP_TEMPLATES`) is now selective
+  rather than automatic: only gaps of 100 points or fewer are even
+  considered "noteworthy" (real production output was mentioning gaps as
+  large as 354 and 382 points for nearly every player), and even a
+  qualifying gap is only mentioned some of the time
+  (`_POINTS_GAP_MENTION_PROBABILITY`), so it reads as a storyline rather
+  than a required field.
+- The length-padding filler (`phrases.FIFTY_TWO_WEEK_NOTES`) is now a
+  small pool instead of one fixed sentence, and every variant is careful
+  to say the *next* official publication is where this week's results
+  show up - the old single sentence's "so a single result can shuffle
+  several places once a big tournament wraps up" was dropped for
+  implying an automatic update.
+- The featured-player segment's "America's favorite"-style joke labels
+  (`featured_player_phrases.AMERICA_FAVORITE_LABELS`) are now tracked per
+  segment so the exact same nickname can never appear twice in one
+  segment - a real production script once said "the reigning champion of
+  this show's affections" twice in three sentences purely by chance
+  (`featured_player._pick_unused_favorite_label`).
+- A loss sentence's two clauses (the result, then a supportive follow-up)
+  are now both run through the same sentence-finishing helper, fixing a
+  bug where the second clause could start lowercase right after the
+  first's period (a real production script read "...7-5,6-2. a temporary
+  setback...").
+- Match scores substituted into narration sentences now get a space after
+  each set-separating comma (`phrase_utils.format_score_for_narration`,
+  e.g. "6-4,7-6(2)" -> "6-4, 7-6(2)") for readability - display-only; the
+  underlying `MatchResult.score` value used everywhere else (`report.json`,
+  graphics, the YouTube description) is untouched.
+
+### Projected/live rankings (future feature, not implemented)
+
+A genuinely different, interesting future feature: estimating where
+in-progress tournament points might place a player on the *next* official
+list. `rankings.projected_rankings_enabled` (`config.yaml`) exists as a
+reserved, disabled-by-default placeholder for this - **setting it to
+`true` currently raises a clear configuration error** rather than
+silently doing nothing, since the feature isn't implemented (it would
+need real logic to estimate provisional points from in-progress
+tournament results, which the current data layer doesn't provide). If
+it's ever built, the design requirement is that a projected number must
+always be labeled as such (e.g. "projected No. 4" / "currently projected
+to rise to No. 4") and must never be displayed or narrated as if it were
+the official WTA ranking.
+
+### Limitations - what can't be fully guaranteed
+
+- **This all depends on `rankedAt` continuing to mean what it currently
+  appears to mean.** `api.wtatennis.com` is an unofficial backend (see
+  "Data source research" above) with no published contract - if a future
+  response ever omitted `rankedAt` or changed its semantics, the app
+  degrades safely (falls back to plain rank-number comparison, exactly
+  the pre-`ranking_date` behavior) rather than failing, but the *extra*
+  protection this feature adds would be unavailable until the field's
+  behavior is reconfirmed.
+- **A provider without a ranking date at all** gets none of this
+  protection beyond what already existed (comparing numbers day to day) -
+  this matters if a different `rankings_provider` is ever added that
+  doesn't expose a publication date.
+- **A same-day re-run isn't a new "publication."** If the pipeline is run
+  twice in one day (e.g. a manual retry), both runs fetch the same
+  official list and are correctly treated as unchanged - this is by
+  design, not a limitation, but worth stating explicitly since "how many
+  times has this run today" is not part of the freshness signal at all.
 
 ## Understanding & optimizing API usage
 
@@ -1284,6 +1486,10 @@ Everything tunable lives in one YAML file - see the fully-commented
   match' to 'did she play yesterday'" above).
 - `rankings_provider` / `match_provider` - `{provider: <name>, ...options}`;
   `<name>` is looked up in the plugin registry (see below).
+- `rankings.projected_rankings_enabled` - reserved, disabled-by-default
+  placeholder for a future live/projected-ranking feature; setting it to
+  `true` raises a configuration error today (not implemented). See
+  ["Official ranking vs. daily match activity"](#official-ranking-vs-daily-match-activity) above.
 - `featured_player` - the recurring "America's favorite" Emma Navarro
   segment; `enabled: false` by default. See ["Featured player"](#featured-player-recurring-editorial-segment) above.
 - `script.generator` - `template` (default, offline, free) or `openai`
@@ -1609,11 +1815,28 @@ OS reflash is the better long-term outcome if you can do it.
 
 ## Testing & code quality
 
-Over 320 unit/integration tests cover models (including `DailyReport.match_target_date`
-and `MatchLookupResult`'s confirmed-negative-vs-unresolved distinction, and
+Over 385 unit/integration tests cover models (including `DailyReport.match_target_date`,
+`DailyReport.ranking_date`/`PlayerRanking.ranking_date`'s round-trip and
+legacy-data-without-the-field defaulting, and `MatchLookupResult`'s
+confirmed-negative-vs-unresolved distinction, and
 `FeaturedPlayerReport`'s never-fabricate-a-missing-fact behavior), movement
-math (including the "unknown" vs "new"
-distinction), country/flag resolution, config loading, the plugin registry,
+math (including the "unknown" vs "new" distinction, and the
+`same_official_ranking_list` guarantee that a match result can never
+imply a ranking change, and `resolve_official_ranking`'s guard against a
+contradictory fetch ever changing displayed rank/points while the
+official list is unchanged - `tests/test_movement.py`), the
+`wta_official` rankings provider's `rankedAt` parsing
+(`tests/test_wta_official_rankings_provider.py`), a dedicated
+"Official ranking vs. daily match activity" scenario suite in
+`tests/test_pipeline_integration.py` (a daily win leaving official ranks
+unchanged, a genuinely new official publication updating them correctly,
+narration never claiming a ranking change from a match alone, two
+consecutive days with the same official list producing the same ordering
+while still picking up fresh match results, and a regression test -
+verified to actually fail without the fix - proving a contradictory
+fetch can never change the displayed Top N ordering or points while
+`ranking_date` is unchanged), country/flag resolution, config loading,
+the plugin registry,
 snapshot persistence (including the wider-pool-metadata-without-affecting-
 movement-history behavior), the sample providers, `MatchProvider`'s default
 day-first fallback in isolation (`tests/test_match_provider_base.py`), the
@@ -1721,4 +1944,11 @@ folders, per-player error isolation, unit tests.
 **Future modules** (each addable independently, per the plugin architecture
 above): ATP version, Top 25, tournament previews, head-to-head stats, player
 biographies, career milestones, injury reports, weather, historical ranking
-charts, multi-language narration (Spanish, French, ...).
+charts, multi-language narration (Spanish, French, ...), and a genuinely
+new **projected/live ranking** feature - `rankings.projected_rankings_enabled`
+is reserved for this but currently rejects being turned on (see ["Official
+ranking vs. daily match activity"](#official-ranking-vs-daily-match-activity)
+above) since it would need real logic to estimate provisional
+in-tournament points, which the current data layer doesn't provide; if
+built, it must always be clearly labeled ("projected No. 4") and never
+presented as the official WTA ranking.

@@ -29,6 +29,24 @@ from wta_daily.plugins.base import ScriptGenerator
 from wta_daily.plugins.registry import script_registry
 from wta_daily.scripts_gen import featured_player, phrases
 from wta_daily.scripts_gen.phrase_utils import PhraseCycler as _PhraseCycler
+from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
+
+#: A points gap is only treated as a storyline worth mentioning when it's
+#: genuinely tight - see _points_gap_sentence. Loosened past this, nearly
+#: every consecutive pair in a Top 10 has *some* gap, which is exactly
+#: what made the narration sound like it was reciting a required field
+#: rather than picking out something noteworthy.
+_POINTS_GAP_NOTEWORTHY_THRESHOLD = 100
+
+#: Even a genuinely tight gap isn't mentioned every time - an occasional
+#: storyline reads better than a guaranteed one.
+_POINTS_GAP_MENTION_PROBABILITY = 0.6
+
+#: How often a win is followed by the (deliberately vague, never
+#: rank/points-specific) "this could matter for the next official
+#: rankings" note - an occasional aside, not a guaranteed addition to
+#: every winning player's paragraph.
+_NEXT_RANKING_NOTE_PROBABILITY = 0.25
 
 
 @script_registry.register("template")
@@ -55,6 +73,7 @@ class TemplateScriptGenerator(ScriptGenerator):
             "loss": _PhraseCycler(phrases.MATCH_LOSS, rng),
             "no_match": _PhraseCycler(phrases.NO_MATCH, rng),
             "gap": _PhraseCycler(phrases.POINTS_GAP_TEMPLATES, rng),
+            "next_ranking_note": _PhraseCycler(phrases.NEXT_RANKING_NOTES, rng),
         }
 
         # Build everything except the final sign-off first, so any length
@@ -127,13 +146,20 @@ class TemplateScriptGenerator(ScriptGenerator):
             pool = cyclers["win"] if player.match.won else cyclers["loss"]
             match_clause = pool.next().format(
                 opponent=player.match.opponent,
-                score=player.match.score,
+                score=format_score_for_narration(player.match.score),
                 round=player.match.round,
                 tournament=player.match.tournament,
             )
             sentence += f" after she {match_clause}."
 
-        extra = self._points_gap_sentence(player, report, index, cyclers)
+            # Deliberately vague, occasional, and win-only - see
+            # phrases.NEXT_RANKING_NOTES's docstring. This never touches
+            # the *current* official rank/movement; it's purely a spoken
+            # aside about the *next* publication.
+            if player.match.won and rng.random() < _NEXT_RANKING_NOTE_PROBABILITY:
+                sentence += f" {cyclers['next_ranking_note'].next()}"
+
+        extra = self._points_gap_sentence(player, report, index, cyclers, rng)
         if extra:
             sentence += f" {extra}"
 
@@ -141,13 +167,24 @@ class TemplateScriptGenerator(ScriptGenerator):
 
     @staticmethod
     def _points_gap_sentence(
-        player: PlayerReport, report: DailyReport, index: int, cyclers: dict[str, _PhraseCycler]
+        player: PlayerReport,
+        report: DailyReport,
+        index: int,
+        cyclers: dict[str, _PhraseCycler],
+        rng: random.Random,
     ) -> str | None:
+        """An occasional storyline, not a required field - see
+        _POINTS_GAP_NOTEWORTHY_THRESHOLD/_POINTS_GAP_MENTION_PROBABILITY's
+        docstrings for why this is deliberately selective rather than
+        firing for every player with any positive gap to the rank above."""
+
         if index == 0:
             return None
         above = report.players[index - 1]
         gap = above.points - player.points
-        if gap <= 0 or gap > 400:
+        if gap <= 0 or gap > _POINTS_GAP_NOTEWORTHY_THRESHOLD:
+            return None
+        if rng.random() >= _POINTS_GAP_MENTION_PROBABILITY:
             return None
         return cyclers["gap"].next().format(gap=gap, rank_above=above.rank)
 
@@ -167,14 +204,17 @@ class TemplateScriptGenerator(ScriptGenerator):
         closer "...we'll see you back here tomorrow" was followed by an
         unrelated ranking-points note, so the actual final spoken line
         wasn't the sign-off at all).
+
+        Picked from :data:`phrases.FIFTY_TWO_WEEK_NOTES` rather than one
+        fixed sentence, so a short script doesn't read identically every
+        day it needs padding - see that pool's docstring for why every
+        variant is careful to say the *next* official publication is where
+        this week's results show up, never that rankings update
+        automatically once a tournament ends.
         """
 
         target_words = self._config.words_per_minute * self._config.target_minutes_low
         word_count = len(body.split())
         if word_count >= target_words:
             return body
-        filler = (
-            "\n\nAs always, ranking points reflect performance over the last fifty-two weeks, "
-            "so a single result can shuffle several places once a big tournament wraps up."
-        )
-        return body + filler
+        return body + "\n\n" + rng.choice(phrases.FIFTY_TWO_WEEK_NOTES)
