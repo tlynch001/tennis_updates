@@ -33,6 +33,7 @@ from wta_daily.models import (
 from wta_daily.movement import compute_movement, previous_ranks_by_player
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.persistence.snapshot_store import RankingsSnapshotStore
+from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
 from wta_daily.plugins.registry import (
     graphics_registry,
     load_builtin_plugins,
@@ -42,6 +43,8 @@ from wta_daily.plugins.registry import (
     video_registry,
     voice_registry,
 )
+from wta_daily.title import generate_title
+from wta_daily.youtube.uploader import publish_report
 from wta_daily.youtube_description import generate_description
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,10 @@ class DailyPipeline:
         store.write_script(script_text)
         logger.info("Wrote %s", store.script_path)
 
+        title = generate_title(report)
+        store.write_title(title)
+        logger.info("Wrote %s", store.title_path)
+
         logger.info("Generating graphics...")
         self._render_graphics(report, store)
         self._render_featured_card(report, store)
@@ -107,6 +114,8 @@ class DailyPipeline:
 
         if self._config.video.enabled:
             self._assemble_video(report, store)
+
+        self._publish_to_youtube(report, store)
 
         if self._config.git.auto_commit:
             self._commit_to_git(store, report_date)
@@ -466,6 +475,33 @@ class DailyPipeline:
             logger.error("Video assembly failed: %s", exc)
             report.errors.append(str(exc))
 
+    def _publish_to_youtube(self, report: DailyReport, store: DailyOutputStore) -> None:
+        """Optional Phase 3, run only after every earlier phase has already
+        produced its artifacts (see :mod:`wta_daily.youtube.uploader`'s
+        module docstring). Disabled by default; when disabled this is a
+        single cheap boolean check and nothing else - no import of any
+        Google library, no credential loading, no network call.
+
+        A failure here is recorded in ``report.errors`` (surfaced via
+        `report.json`, exactly like every other optional phase's
+        failures) but never raises - the finished video/thumbnail/
+        description/report already on disk are completely unaffected.
+        """
+
+        if not self._config.youtube.enabled:
+            logger.debug("YouTube publishing is disabled (youtube.enabled: false); skipping.")
+            return
+
+        upload_store = YouTubeUploadStore(self._config.data_dir)
+        result = publish_report(report, store, self._config.youtube, upload_store)
+
+        if result.status == "failed":
+            report.errors.append(f"YouTube upload failed: {result.video_error}")
+        elif result.status == "success" and result.thumbnail_error:
+            report.errors.append(f"YouTube thumbnail upload failed: {result.thumbnail_error}")
+
+        store.write_report(report)  # persist the outcome above, if any
+
     def _commit_to_git(self, store: DailyOutputStore, report_date: date) -> None:
         logger.info("Committing to git...")
         try:
@@ -474,6 +510,9 @@ class DailyPipeline:
                 self._config.data_dir / "rankings-history.json",
                 self._config.data_dir / "players.json",
             ]
+            youtube_uploads_path = self._config.data_dir / "youtube-uploads.json"
+            if youtube_uploads_path.exists():
+                paths.append(youtube_uploads_path)
             commit_and_push(self._repo_root, paths, report_date, self._config.git)
         except GitAutomationError as exc:
             logger.error("Git automation failed: %s", exc)

@@ -25,6 +25,13 @@ dev = [
     "types-PyYAML",
     "types-requests",
 ]
+# Optional: only needed for Phase 3 (youtube.enabled: true). See
+# requirements-youtube.txt / README.md's "YouTube publishing" section.
+youtube = [
+    "google-api-python-client>=2.100,<3",
+    "google-auth-httplib2>=0.2,<1",
+    "google-auth-oauthlib>=1.2,<2",
+]
 
 [project.scripts]
 wta-daily = "wta_daily.cli:main"

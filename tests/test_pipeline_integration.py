@@ -4,6 +4,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from wta_daily.config import AppConfig, FeaturedPlayerConfig, GraphicsConfig, ProviderConfig
 from wta_daily.models import DailyReport, MatchLookupResult, MatchResult, Movement, PlayerRanking
 from wta_daily.persistence.report_store import DailyOutputStore
@@ -14,6 +16,7 @@ from wta_daily.plugins.rankings.sample import SampleRankingsProvider
 from wta_daily.plugins.registry import matches_registry, rankings_registry
 from wta_daily.video.ffmpeg_assembler import FfmpegVideoAssembler
 from wta_daily.voice.narration_timing import NarrationSegment
+from wta_daily.youtube.uploader import YouTubePublishResult
 
 from .conftest import SAMPLE_MATCHES_FIXTURE, SAMPLE_RANKINGS_FIXTURE
 
@@ -705,6 +708,147 @@ def test_description_can_be_disabled_via_config(tmp_path: Path) -> None:
     output_dir = config.output_dir / "2026-08-09"
     assert (output_dir / "thumbnail.png").exists()
     assert not (output_dir / "youtube_description.txt").exists()
+
+
+# --- YouTube publishing (Phase 3) --------------------------------------------
+
+
+def test_title_txt_is_written_with_the_canonical_format(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+
+    DailyPipeline(config).run(date(2026, 8, 17))
+
+    title = (config.output_dir / "2026-08-17" / "title.txt").read_text(encoding="utf-8").strip()
+    assert title == "WTA Top 5 Update \u2014 August 17, 2026"
+
+
+def test_youtube_disabled_by_default_never_calls_publish_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    assert config.youtube.enabled is False
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise AssertionError("publish_report must not be called when youtube.enabled is false")
+
+    monkeypatch.setattr("wta_daily.pipeline.publish_report", _boom)
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert report.errors == []
+    assert not (config.data_dir / "youtube-uploads.json").exists()
+
+
+def test_youtube_publish_success_adds_no_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_config(tmp_path)
+    config.youtube.enabled = True
+
+    monkeypatch.setattr(
+        "wta_daily.pipeline.publish_report",
+        lambda *a, **kw: YouTubePublishResult(
+            status="success", video_id="abc123", video_url="https://www.youtube.com/watch?v=abc123"
+        ),
+    )
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert report.errors == []
+    saved = json.loads((config.output_dir / "2026-08-09" / "report.json").read_text())
+    assert saved["errors"] == []
+
+
+def test_youtube_publish_failure_is_recorded_without_aborting_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    config.youtube.enabled = True
+
+    monkeypatch.setattr(
+        "wta_daily.pipeline.publish_report",
+        lambda *a, **kw: YouTubePublishResult(status="failed", video_error="simulated outage"),
+    )
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert any("YouTube upload failed" in e and "simulated outage" in e for e in report.errors)
+    # Every other artifact from earlier phases is completely unaffected.
+    output_dir = config.output_dir / "2026-08-09"
+    assert (output_dir / "report.json").exists()
+    assert (output_dir / "script.txt").exists()
+    assert (output_dir / "leaderboard.png").exists()
+    assert (output_dir / "thumbnail.png").exists()
+    # The failure is visible in the persisted report too, not just in-memory.
+    saved = json.loads((output_dir / "report.json").read_text())
+    assert any("YouTube upload failed" in e for e in saved["errors"])
+
+
+def test_youtube_thumbnail_failure_reported_separately_from_video_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    config.youtube.enabled = True
+
+    monkeypatch.setattr(
+        "wta_daily.pipeline.publish_report",
+        lambda *a, **kw: YouTubePublishResult(
+            status="success",
+            video_id="abc123",
+            video_url="https://www.youtube.com/watch?v=abc123",
+            thumbnail_error="simulated thumbnail failure",
+        ),
+    )
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert any(
+        "YouTube thumbnail upload failed" in e and "simulated thumbnail failure" in e for e in report.errors
+    )
+
+
+def test_youtube_publishing_end_to_end_with_a_real_upload_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises the real DailyPipeline._publish_to_youtube -> publish_report
+    -> YouTubeUploadStore wiring end to end, all the way through the real
+    (offline - google-api-python-client's discovery document is bundled,
+    no network call) build_client()/googleapiclient.discovery.build() call.
+    Only get_credentials (which would otherwise need a real OAuth token)
+    and the two functions that would otherwise perform a real upload call
+    are mocked. Skipped, not failed, if the optional google packages
+    (requirements-youtube.txt) aren't installed."""
+
+    pytest.importorskip("google.oauth2.credentials")
+    pytest.importorskip("googleapiclient.discovery")
+    from google.oauth2.credentials import Credentials
+
+    config = _make_config(tmp_path)
+    config.youtube.enabled = True
+    # publish_report requires a real video.mp4 on disk (Phase 3 only ever
+    # consumes it, never regenerates it) - video assembly itself (ffmpeg)
+    # is out of scope for this test, so just place a stand-in file where
+    # the pipeline's own DailyOutputStore convention expects one.
+    video_dir = config.output_dir / "2026-08-09"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    (video_dir / "video.mp4").write_bytes(b"fake mp4 bytes")
+
+    from wta_daily.youtube import uploader as uploader_module
+
+    monkeypatch.setattr(uploader_module, "_upload_video", lambda *a, **kw: "real-flow-video-id")
+    monkeypatch.setattr(uploader_module, "_set_thumbnail", lambda *a, **kw: None)
+    # publish_report's default client_factory is the real build_client, which
+    # itself calls get_credentials - patch that (a normal name lookup at call
+    # time, unlike a bound default-argument value) to avoid any real OAuth,
+    # while still exercising the real (offline) googleapiclient.discovery.build().
+    monkeypatch.setattr(uploader_module, "get_credentials", lambda _config: Credentials(token="fake-token"))
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert report.errors == []
+    from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
+
+    record = YouTubeUploadStore(config.data_dir).get_upload(date(2026, 8, 9), config.tour)
+    assert record is not None
+    assert record.video_id == "real-flow-video-id"
 
 
 def test_missing_tournament_data_does_not_crash_the_run(tmp_path: Path) -> None:

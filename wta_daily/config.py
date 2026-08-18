@@ -270,6 +270,56 @@ class PublishingConfig:
         )
 
 
+_VALID_YOUTUBE_PRIVACY_STATUSES = frozenset({"private", "unlisted", "public"})
+
+
+@dataclass
+class YouTubeConfig:
+    """Optional Phase 3: publishing the finished ``video.mp4`` to YouTube via
+    the official YouTube Data API v3 (never Selenium/browser automation).
+
+    ``enabled`` is ``False`` by default and MUST stay that way unless a
+    caller deliberately opts in - see :mod:`wta_daily.youtube`'s package
+    docstring for the guarantee this implies: while disabled, no Google
+    library import is required, no OAuth credential file is ever read, no
+    network call to Google is made, and no upload is attempted, so the
+    rest of the application (and anyone who hasn't set up Google Cloud
+    credentials at all) behaves exactly as it did before this feature
+    existed.
+
+    ``client_secret_path``/``token_path`` are *locations* of secret files,
+    not secrets themselves - unlike ``VoiceConfig.api_key_env`` (a single
+    bearer key resolved from the environment), OAuth needs a small JSON
+    client-secret file plus a locally-cached, auto-refreshing token file.
+    Both default to a git-ignored ``secrets/`` directory (see
+    ``.gitignore`` and the README's "YouTube publishing" section for the
+    one-time Google Cloud setup that produces the client-secret file).
+    """
+
+    enabled: bool = False
+    privacy: str = "unlisted"
+    category_id: str = "17"  # YouTube category id 17 = Sports
+    client_secret_path: Path = Path("secrets/youtube_client_secret.json")
+    token_path: Path = Path("secrets/youtube_token.json")
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> YouTubeConfig:
+        data = data or {}
+        defaults = cls()
+        privacy = str(data.get("privacy", defaults.privacy))
+        if privacy not in _VALID_YOUTUBE_PRIVACY_STATUSES:
+            raise ConfigurationError(
+                f"youtube.privacy must be one of {sorted(_VALID_YOUTUBE_PRIVACY_STATUSES)}, got {privacy!r}."
+            )
+        return cls(
+            enabled=bool(data.get("enabled", defaults.enabled)),
+            privacy=privacy,
+            category_id=str(data.get("category_id", defaults.category_id)),
+            client_secret_path=Path(data.get("client_secret_path", defaults.client_secret_path)),
+            token_path=Path(data.get("token_path", defaults.token_path)),
+        )
+
+
 @dataclass
 class ScriptConfig:
     generator: str = "template"
@@ -334,6 +384,7 @@ class AppConfig:
     video: VideoConfig = field(default_factory=VideoConfig)
     git: GitConfig = field(default_factory=GitConfig)
     publishing: PublishingConfig = field(default_factory=PublishingConfig)
+    youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
     tournament_preferences: list[str] = field(default_factory=list)
 
     @classmethod
@@ -363,6 +414,7 @@ class AppConfig:
             video=VideoConfig.from_mapping(data.get("video")),
             git=GitConfig.from_mapping(data.get("git")),
             publishing=PublishingConfig.from_mapping(data.get("publishing")),
+            youtube=YouTubeConfig.from_mapping(data.get("youtube")),
             tournament_preferences=list(data.get("tournament_preferences", [])),
         )
 
