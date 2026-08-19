@@ -30,6 +30,7 @@ from wta_daily.plugins.registry import script_registry
 from wta_daily.scripts_gen import featured_player, phrases
 from wta_daily.scripts_gen.phrase_utils import PhraseCycler as _PhraseCycler
 from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
+from wta_daily.scripts_gen.tournament_status_narration import build_tournament_status_sentence
 
 #: A points gap is only treated as a storyline worth mentioning when it's
 #: genuinely tight - see _points_gap_sentence. Loosened past this, nearly
@@ -162,6 +163,10 @@ class TemplateScriptGenerator(ScriptGenerator):
         extra = self._points_gap_sentence(player, report, index, cyclers, rng)
         if extra:
             sentence += f" {extra}"
+
+        status_sentence = build_tournament_status_sentence(player.tournament_status, player.name, rng)
+        if status_sentence:
+            sentence += f" {status_sentence}"
 
         return sentence
 

@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from wta_daily.config import AppConfig, FeaturedPlayerConfig, GraphicsConfig, ProviderConfig
-from wta_daily.models import DailyReport, MatchLookupResult, MatchResult, Movement, PlayerRanking
+from wta_daily.models import (
+    DailyReport,
+    MatchLookupResult,
+    MatchResult,
+    Movement,
+    PlayerRanking,
+    TournamentRunStatus,
+    TournamentState,
+)
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.pipeline import DailyPipeline
 from wta_daily.plugins.base import MatchProvider, RankingsProvider
@@ -324,10 +332,13 @@ class _SyntheticMatchProvider(MatchProvider):
         matches: dict[str, MatchResult] | None = None,
         unresolved: set[str] | None = None,
         error: Exception | None = None,
+        tournament_status: dict[str, object] | None = None,
+        **_ignored: object,
     ) -> None:
         self._matches = matches or {}
         self._unresolved = frozenset(unresolved or ())
         self._error = error
+        self._tournament_status = tournament_status or {}
         self.requested_player_ids: list[str] = []
 
     def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
@@ -340,7 +351,10 @@ class _SyntheticMatchProvider(MatchProvider):
         requested = {p.player_id for p in players}
         matches = {pid: m for pid, m in self._matches.items() if pid in requested}
         unresolved = self._unresolved & requested
-        return MatchLookupResult(matches=matches, unresolved_player_ids=unresolved)
+        tournament_status = {pid: s for pid, s in self._tournament_status.items() if pid in requested}
+        return MatchLookupResult(
+            matches=matches, unresolved_player_ids=unresolved, tournament_status=tournament_status
+        )
 
 
 def _emma_match(*, won: bool) -> MatchResult:
@@ -1205,3 +1219,146 @@ def test_ranking_date_is_none_for_providers_that_do_not_supply_one(tmp_path: Pat
     report = DailyPipeline(config).run(date(2026, 8, 9))
 
     assert report.ranking_date is None
+
+
+# --- Tournament-elimination narration context (end-to-end) ------------------
+
+
+def test_tournament_status_flows_from_provider_into_report_and_narration(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config.top_n = 5
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = SampleRankingsProvider(fixture_path=SAMPLE_RANKINGS_FIXTURE)
+    target_id = "sample-001"
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        tournament_group_id="1017",
+        category="WTA 1000",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Some Rival",
+        points_earned=120,
+        is_new_development=True,
+    )
+    pipeline._match_provider = _SyntheticMatchProvider(tournament_status={target_id: status})
+
+    report = pipeline.run(date(2026, 8, 9))
+
+    player = next(p for p in report.players if p.player_id == target_id)
+    assert player.tournament_status is not None
+    assert player.tournament_status.state == TournamentState.ELIMINATED
+    assert player.tournament_status.round_reached == "R16"
+
+    saved = json.loads((config.output_dir / "2026-08-09" / "report.json").read_text())
+    saved_player = next(p for p in saved["players"] if p["player_id"] == target_id)
+    assert saved_player["tournament_status"]["state"] == "eliminated"
+    assert saved_player["tournament_status"]["eliminated_by"] == "Some Rival"
+
+    script = (config.output_dir / "2026-08-09" / "script.txt").read_text()
+    assert "Some Rival" in script
+    assert "Round of 16" in script
+
+
+def test_tournament_status_is_detailed_on_first_report_and_brief_afterward(tmp_path: Path) -> None:
+    """End-to-end persistence check: the same elimination result reported
+    on two separate pipeline runs (sharing the same data_dir) must be
+    'detailed' the first time and 'brief' the second - see
+    TournamentStatusStore."""
+
+    config = _make_config(tmp_path)
+    config.top_n = 5
+    target_id = "sample-001"
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        tournament_group_id="1017",
+        category="WTA 1000",
+        round_reached="QF",
+        round_label="the quarterfinals",
+        eliminated_by="Some Rival",
+        points_earned=215,
+        is_new_development=True,  # provider always reports True; the store decides otherwise
+    )
+
+    pipeline = DailyPipeline(config)
+    pipeline._match_provider = _SyntheticMatchProvider(tournament_status={target_id: status})
+    first_report = pipeline.run(date(2026, 8, 9))
+    first_player = next(p for p in first_report.players if p.player_id == target_id)
+    assert first_player.tournament_status is not None
+    assert first_player.tournament_status.is_new_development is True
+
+    pipeline2 = DailyPipeline(config)  # fresh pipeline, same config.data_dir
+    pipeline2._match_provider = _SyntheticMatchProvider(tournament_status={target_id: status})
+    second_report = pipeline2.run(date(2026, 8, 10))
+    second_player = next(p for p in second_report.players if p.player_id == target_id)
+    assert second_player.tournament_status is not None
+    assert second_player.tournament_status.is_new_development is False
+
+    second_script = (config.output_dir / "2026-08-10" / "script.txt").read_text()
+    # Brief mention only - the full detail (eliminator name, points figure)
+    # shouldn't be repeated a second time.
+    assert "215" not in second_script
+
+
+def test_tournament_status_never_breaks_the_pipeline_when_absent(tmp_path: Path) -> None:
+    """A match provider with no tournament-draw visibility (the ordinary
+    sample/offline fixture) must produce identical Phase 1 behavior to
+    before this feature existed - no tournament_status anywhere, no
+    elimination language in the script."""
+
+    config = _make_config(tmp_path)
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+
+    assert all(p.tournament_status is None for p in report.players)
+    script = (config.output_dir / "2026-08-09" / "script.txt").read_text()
+    assert "eliminated by" not in script
+
+
+def test_tournament_status_config_is_wired_into_match_provider_construction(tmp_path: Path) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    class _KwargCapturingMatchProvider(MatchProvider):
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.update(kwargs)
+
+        def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
+            return None
+
+    matches_registry.register("kwarg-capturing-for-tests")(_KwargCapturingMatchProvider)
+    config = _make_config(tmp_path)
+    config.match_provider = ProviderConfig(name="kwarg-capturing-for-tests")
+    config.tournament_status.enabled = False
+    config.tournament_status.previous_year_lookback_enabled = False
+
+    DailyPipeline(config)
+
+    # The pipeline wires config.tournament_status straight into the match
+    # provider's constructor kwargs, regardless of which provider is
+    # configured - see DailyPipeline.__init__'s match_provider_kwargs.
+    assert captured_kwargs["tournament_status_enabled"] is False
+    assert captured_kwargs["tournament_status_previous_year_lookback_enabled"] is False
+
+
+def test_featured_player_gets_tournament_status_context(tmp_path: Path) -> None:
+    config = _make_featured_config(tmp_path)
+    pipeline = DailyPipeline(config)
+    pipeline._rankings_provider = _SyntheticRankingsProvider(_synthetic_rankings(28))
+    status = TournamentRunStatus(
+        state=TournamentState.CHAMPION,
+        tournament="Cincinnati",
+        round_reached="W",
+        round_label="the title",
+        points_earned=1000,
+        is_new_development=True,
+    )
+    pipeline._match_provider = _SyntheticMatchProvider(tournament_status={EMMA_ID: status})
+
+    report = pipeline.run(date(2026, 8, 9))
+
+    assert report.featured_player is not None
+    assert report.featured_player.tournament_status is not None
+    assert report.featured_player.tournament_status.state == TournamentState.CHAMPION
+
+    script = (config.output_dir / "2026-08-09" / "script.txt").read_text()
+    assert "champion" in script.lower() or "title" in script.lower()
