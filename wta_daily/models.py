@@ -154,6 +154,121 @@ class MatchResult:
         )
 
 
+class TournamentState(StrEnum):
+    """A player's status in the specific tournament her most recent
+    activity relates to - deliberately more granular than "played
+    yesterday or not," so narration never has to say something as
+    unhelpful as "she did not play yesterday" when the real, more useful
+    story is that she was already eliminated (see
+    :mod:`wta_daily.plugins.matches.wta_official`'s tournament-status
+    logic and the README's "Tournament elimination context" section).
+
+    * ``ACTIVE`` - still alive in the draw (has an unplayed fixture, or
+      her most recent finished fixture was a win that wasn't the final).
+    * ``ELIMINATED`` - her run ended in a loss; ``round_reached`` and
+      ``eliminated_by`` on :class:`TournamentRunStatus` describe how.
+    * ``CHAMPION`` - won the final.
+    * ``DID_NOT_PARTICIPATE`` - not found in any currently-relevant
+      tournament's draw at all (the ordinary case on a day with no
+      tournament activity for her - not an error).
+    * ``UNKNOWN`` - couldn't be determined this run (e.g. a fetch
+      failure, or a match provider with no tournament-draw visibility at
+      all - see :meth:`~wta_daily.plugins.base.MatchProvider.get_matches_for_date`'s
+      default, which never fabricates this).
+    """
+
+    ACTIVE = "active"
+    ELIMINATED = "eliminated"
+    CHAMPION = "champion"
+    DID_NOT_PARTICIPATE = "did_not_participate"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class TournamentRunStatus:
+    """Everything known about a player's run in her current/most recent
+    tournament, including - when reliably determinable - how that
+    compares to her result at the *same* tournament last year.
+
+    Every field here is deterministic application data: ``points_earned``/
+    ``previous_year_points``/``points_delta`` come from
+    :mod:`wta_daily.points_table` (never an LLM guess - see that module's
+    docstring), and ``previous_year_round`` comes only from a real,
+    matching previous-year tournament fixture found through the same
+    provider architecture as everything else (never invented - see
+    :mod:`wta_daily.plugins.matches.wta_official`). Any fact that
+    couldn't be reliably determined is ``None`` rather than guessed, so
+    narration can degrade gracefully field by field (see the README's
+    "Tournament elimination context" section for the exact hierarchy).
+
+    ``points_delta`` is deliberately **not** "points gained toward her
+    ranking" - it's ``points_earned - previous_year_points`` (when both
+    are known), i.e. the *net swing* from this specific tournament once
+    last year's result eventually rolls off the rolling 52-week window.
+    It is never the player's real-time ranking-points total, which only
+    the official ranking list itself (see
+    :class:`~wta_daily.models.PlayerRanking`) represents.
+
+    ``is_new_development`` is set by the pipeline (never the match
+    provider, which has no notion of "already reported") by comparing
+    against the last thing recorded for this player in
+    :mod:`wta_daily.persistence.tournament_status_store` - ``True`` the
+    first time a given ``(tournament_group_id, year, round_reached)``
+    triple is seen, ``False`` on every subsequent day it's still current,
+    which is what lets narration go into full detail once and stay brief
+    after that (see the README's "detailed once, brief afterward" note).
+    """
+
+    state: TournamentState
+    tournament: str | None = None
+    tournament_group_id: str | None = None
+    category: str | None = None
+    round_reached: str | None = None
+    round_label: str | None = None
+    eliminated_by: str | None = None
+    points_earned: int | None = None
+    previous_year_round: str | None = None
+    previous_year_round_label: str | None = None
+    previous_year_points: int | None = None
+    points_delta: int | None = None
+    is_new_development: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state.value,
+            "tournament": self.tournament,
+            "tournament_group_id": self.tournament_group_id,
+            "category": self.category,
+            "round_reached": self.round_reached,
+            "round_label": self.round_label,
+            "eliminated_by": self.eliminated_by,
+            "points_earned": self.points_earned,
+            "previous_year_round": self.previous_year_round,
+            "previous_year_round_label": self.previous_year_round_label,
+            "previous_year_points": self.previous_year_points,
+            "points_delta": self.points_delta,
+            "is_new_development": self.is_new_development,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TournamentRunStatus:
+        return cls(
+            state=TournamentState(data.get("state", "unknown")),
+            tournament=data.get("tournament"),
+            tournament_group_id=data.get("tournament_group_id"),
+            category=data.get("category"),
+            round_reached=data.get("round_reached"),
+            round_label=data.get("round_label"),
+            eliminated_by=data.get("eliminated_by"),
+            points_earned=data.get("points_earned"),
+            previous_year_round=data.get("previous_year_round"),
+            previous_year_round_label=data.get("previous_year_round_label"),
+            previous_year_points=data.get("previous_year_points"),
+            points_delta=data.get("points_delta"),
+            is_new_development=bool(data.get("is_new_development", True)),
+        )
+
+
 @dataclass(frozen=True)
 class MatchLookupResult:
     """Outcome of a day-first batch match lookup (:meth:`MatchProvider.get_matches_for_date`)
@@ -176,6 +291,13 @@ class MatchLookupResult:
 
     matches: dict[str, MatchResult] = field(default_factory=dict)
     unresolved_player_ids: frozenset[str] = field(default_factory=frozenset)
+    #: Per-player tournament run status (see :class:`TournamentRunStatus`),
+    #: keyed by ``player_id`` - populated only by a provider with genuine
+    #: tournament-draw visibility (``wta_official``'s day-first
+    #: infrastructure); every other provider simply omits a player here,
+    #: which downstream code must treat identically to an explicit
+    #: :attr:`TournamentState.UNKNOWN`, never as an error.
+    tournament_status: dict[str, TournamentRunStatus] = field(default_factory=dict)
 
 
 @dataclass
@@ -203,6 +325,11 @@ class PlayerReport:
     previous_rank: int | None = None
     match: MatchResult | None = None
     match_error: str | None = None
+    #: See :class:`TournamentRunStatus`. ``None`` whenever the configured
+    #: match provider has no tournament-draw visibility (the ordinary
+    #: case for e.g. the offline ``sample`` fixture) - callers must treat
+    #: that identically to :attr:`TournamentState.UNKNOWN`.
+    tournament_status: TournamentRunStatus | None = None
 
     @property
     def played(self) -> bool:
@@ -240,6 +367,8 @@ class PlayerReport:
             data["surface"] = None
         if self.match_error:
             data["match_error"] = self.match_error
+        if self.tournament_status is not None:
+            data["tournament_status"] = self.tournament_status.to_dict()
         return data
 
     @classmethod
@@ -256,6 +385,7 @@ class PlayerReport:
                 match_date=date.fromisoformat(raw_match_date) if raw_match_date else None,
                 surface=data.get("surface"),
             )
+        raw_tournament_status = data.get("tournament_status")
         return cls(
             rank=int(data["rank"]),
             name=str(data["name"]),
@@ -266,6 +396,9 @@ class PlayerReport:
             previous_rank=data.get("previous_rank"),
             match=match,
             match_error=data.get("match_error"),
+            tournament_status=(
+                TournamentRunStatus.from_dict(raw_tournament_status) if raw_tournament_status else None
+            ),
         )
 
 
@@ -300,6 +433,9 @@ class FeaturedPlayerReport:
     match: MatchResult | None = None
     match_error: str | None = None
     rank_error: str | None = None
+    #: See :class:`TournamentRunStatus`; ``None`` under the same
+    #: circumstances as :attr:`PlayerReport.tournament_status`.
+    tournament_status: TournamentRunStatus | None = None
 
     @property
     def played(self) -> bool | None:
@@ -345,6 +481,8 @@ class FeaturedPlayerReport:
             data["match_error"] = self.match_error
         if self.rank_error:
             data["rank_error"] = self.rank_error
+        if self.tournament_status is not None:
+            data["tournament_status"] = self.tournament_status.to_dict()
         return data
 
     @classmethod
@@ -362,6 +500,7 @@ class FeaturedPlayerReport:
                 surface=data.get("surface"),
             )
         movement_raw = data.get("movement")
+        raw_tournament_status = data.get("tournament_status")
         return cls(
             name=str(data["name"]),
             player_id=str(data["player_id"]),
@@ -374,6 +513,9 @@ class FeaturedPlayerReport:
             match=match,
             match_error=data.get("match_error"),
             rank_error=data.get("rank_error"),
+            tournament_status=(
+                TournamentRunStatus.from_dict(raw_tournament_status) if raw_tournament_status else None
+            ),
         )
 
 

@@ -285,6 +285,44 @@ class RankingsConfig:
 
 
 @dataclass
+class TournamentStatusConfig:
+    """Settings for the tournament-elimination narration context (see the
+    README's "Tournament elimination context" section): when a Top N or
+    featured player has been eliminated from (or has won) her current
+    tournament, narration can mention the round she reached, the official
+    ranking points that earned her, and - when reliably available - how
+    that compares with her result at the same tournament last year.
+
+    On by default - only a match provider with genuine tournament-draw
+    visibility (``wta_official``) ever populates this; every other
+    provider leaves it at "unknown" automatically, so leaving this `true`
+    has no effect at all unless you're using a provider that supports it.
+
+    ``previous_year_lookback_enabled`` can be turned off on its own to
+    keep the elimination/points context while skipping the extra
+    previous-year lookup call entirely (made only for players who are
+    actually eliminated or champions this run, which is normally a
+    handful at most - see the README's "API-call impact" note).
+    """
+
+    enabled: bool = True
+    previous_year_lookback_enabled: bool = True
+    points_table_path: str = "data/wta_points_table.yaml"
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> TournamentStatusConfig:
+        data = data or {}
+        defaults = cls()
+        return cls(
+            enabled=bool(data.get("enabled", defaults.enabled)),
+            previous_year_lookback_enabled=bool(
+                data.get("previous_year_lookback_enabled", defaults.previous_year_lookback_enabled)
+            ),
+            points_table_path=str(data.get("points_table_path", defaults.points_table_path)),
+        )
+
+
+@dataclass
 class PublishingConfig:
     """YouTube-adjacent artifacts generated alongside the rest of the daily
     output: ``thumbnail.png`` and ``youtube_description.txt`` (see the
@@ -418,6 +456,7 @@ class AppConfig:
     )
     featured_player: FeaturedPlayerConfig = field(default_factory=FeaturedPlayerConfig)
     rankings: RankingsConfig = field(default_factory=RankingsConfig)
+    tournament_status: TournamentStatusConfig = field(default_factory=TournamentStatusConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     script: ScriptConfig = field(default_factory=ScriptConfig)
     graphics: GraphicsConfig = field(default_factory=GraphicsConfig)
@@ -449,6 +488,7 @@ class AppConfig:
             ),
             featured_player=FeaturedPlayerConfig.from_mapping(data.get("featured_player")),
             rankings=RankingsConfig.from_mapping(data.get("rankings")),
+            tournament_status=TournamentStatusConfig.from_mapping(data.get("tournament_status")),
             network=NetworkConfig.from_mapping(data.get("network")),
             script=ScriptConfig.from_mapping(data.get("script")),
             graphics=GraphicsConfig.from_mapping(data.get("graphics")),
