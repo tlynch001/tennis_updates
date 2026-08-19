@@ -550,3 +550,101 @@ def test_no_tournament_status_produces_the_same_script_as_before_this_feature() 
 
     assert "eliminated by" not in script
     assert "champion" not in script.lower()
+
+
+def test_eliminated_player_never_gets_generic_no_match_filler() -> None:
+    """Once we know a player's tournament is over, saying she also 'had
+    no match to report' reads as an odd non-sequitur - the elimination
+    context should stand alone."""
+
+    report = _sample_report([Movement.SAME])
+    report.players[0].match = None
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Iga Swiatek",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    for seed_offset in range(10):
+        report.report_date = date(2026, 8, 9 + seed_offset)
+        script = TemplateScriptGenerator().generate(report)
+        assert "no match to report" not in script.lower()
+        for phrase in phrases.NO_MATCH:
+            assert phrase not in script
+
+
+def test_eliminated_player_never_gets_match_error_filler() -> None:
+    report = _sample_report([Movement.SAME])
+    report.players[0].match = None
+    report.players[0].match_error = "simulated outage"
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Iga Swiatek",
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "couldn't be confirmed" not in script
+
+
+def test_champion_player_never_gets_generic_no_match_filler() -> None:
+    report = _sample_report([Movement.SAME])
+    report.players[0].match = None
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.CHAMPION,
+        round_reached="W",
+        round_label="the title",
+        points_earned=1000,
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "no match to report" not in script.lower()
+
+
+def test_a_real_match_result_is_never_suppressed_even_when_eliminated() -> None:
+    """The suppression only ever targets generic 'nothing to say either
+    way' filler - a genuine win/loss result for the target date is a
+    real fact and must still appear."""
+
+    report = _sample_report([Movement.SAME])
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Iga Swiatek",
+        is_new_development=True,
+    )
+    assert report.players[0].match is not None  # sanity check on the fixture helper
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert report.players[0].match.opponent in script
+
+
+def test_active_status_does_not_suppress_generic_no_match_filler() -> None:
+    """Suppression is specific to a *concluded* run (eliminated/champion) -
+    an ACTIVE player with no match that day still gets the normal filler."""
+
+    report = _sample_report([Movement.SAME])
+    report.players[0].match = None
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ACTIVE, tournament="Cincinnati"
+    )
+
+    found = False
+    for seed_offset in range(10):
+        report.report_date = date(2026, 8, 9 + seed_offset)
+        script = TemplateScriptGenerator().generate(report)
+        if any(phrase in script for phrase in phrases.NO_MATCH):
+            found = True
+            break
+    assert found

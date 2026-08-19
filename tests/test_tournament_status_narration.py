@@ -7,7 +7,10 @@ import random
 import pytest
 
 from wta_daily.models import TournamentRunStatus, TournamentState
-from wta_daily.scripts_gen.tournament_status_narration import build_tournament_status_sentence
+from wta_daily.scripts_gen.tournament_status_narration import (
+    build_tournament_status_sentence,
+    supersedes_inactivity_narration,
+)
 
 
 def _rng() -> random.Random:
@@ -98,7 +101,7 @@ def test_eliminated_omits_points_when_unavailable() -> None:
 @pytest.mark.parametrize(
     ("round_reached", "previous_year_round", "expect_substring"),
     [
-        ("QF", "R32", "improvement"),
+        ("QF", "R32", "improving"),
         ("R32", "QF", "step back"),
         ("QF", "QF", "matching"),
     ],
@@ -257,3 +260,194 @@ def test_never_fabricates_history_when_round_reached_is_unrecognized() -> None:
     assert sentence is not None
     assert "last year" not in sentence
     assert "a year ago" not in sentence
+
+
+# --- Narration-polish follow-up: precedence, naming, grammar ----------------
+
+
+def test_supersedes_inactivity_narration_true_for_eliminated_and_champion() -> None:
+    assert supersedes_inactivity_narration(TournamentRunStatus(state=TournamentState.ELIMINATED)) is True
+    assert supersedes_inactivity_narration(TournamentRunStatus(state=TournamentState.CHAMPION)) is True
+
+
+@pytest.mark.parametrize(
+    "state",
+    [TournamentState.ACTIVE, TournamentState.DID_NOT_PARTICIPATE, TournamentState.UNKNOWN],
+)
+def test_supersedes_inactivity_narration_false_for_non_terminal_states(state: TournamentState) -> None:
+    assert supersedes_inactivity_narration(TournamentRunStatus(state=state)) is False
+
+
+def test_supersedes_inactivity_narration_false_for_none() -> None:
+    assert supersedes_inactivity_narration(None) is False
+
+
+def test_uses_first_name_not_full_name_after_introduction() -> None:
+    """The full name is assumed already introduced by the caller (see the
+    module docstring) - this sentence should never repeat it."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        is_new_development=True,
+    )
+
+    for seed in range(30):
+        sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed))
+        assert sentence is not None
+        assert "Navarro" not in sentence
+        assert "Emma" in sentence
+
+
+def test_first_name_used_after_eliminator_avoids_pronoun_ambiguity() -> None:
+    """Once the eliminator's name has been mentioned, the points sentence
+    must refer to the eliminated player by her first name (not a bare
+    'she'/'her'), so it's unambiguous which player earned the points -
+    see the module docstring's "Jessica Pegula... Emma earned" example."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        is_new_development=True,
+    )
+
+    for seed in range(30):
+        sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed))
+        assert sentence is not None
+        sentences = sentence.split(". ")
+        assert len(sentences) >= 2
+        points_sentence = next(s for s in sentences if "65" in s)
+        # Her first name (not a bare pronoun) must be the one identifying
+        # who earned the points - unambiguous regardless of word order.
+        assert "Emma" in points_sentence
+        assert not points_sentence.strip().startswith(("She ", "Her "))
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_historical_comparison_never_produces_a_duplicate_article(seed: int) -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        previous_year_round="R64",
+        previous_year_round_label="the Round of 64",
+        previous_year_points=35,
+        points_delta=30,
+        is_new_development=True,
+    )
+
+    sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed))
+
+    assert sentence is not None
+    lowered = sentence.lower()
+    assert "the the" not in lowered
+    assert "her the" not in lowered
+    assert "last year's the" not in lowered
+    assert "a the" not in lowered
+
+
+def test_points_sentence_prefers_ranking_points_wording() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        is_new_development=True,
+    )
+
+    for seed in range(20):
+        sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed))
+        assert sentence is not None
+        assert "ranking points" in sentence
+
+
+def test_net_swing_is_phrased_as_a_continuation_of_the_history_clause() -> None:
+    """The net-points-swing figure must read as a natural continuation of
+    the historical comparison, not a separately crammed-on fragment -
+    i.e. it should never appear without a comparison clause before it."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        previous_year_round="R64",
+        previous_year_round_label="the Round of 64",
+        previous_year_points=35,
+        points_delta=30,
+        is_new_development=True,
+    )
+
+    for seed in range(20):
+        sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed))
+        assert sentence is not None
+        assert "30 points" in sentence
+        # The swing figure only ever appears alongside the historical
+        # comparison wording, never on its own.
+        markers = (
+            "improving",
+            "better than",
+            "step up",
+            "matching",
+            "same result",
+            "step back",
+            "short of",
+        )
+        assert any(marker in sentence for marker in markers)
+
+
+def test_detailed_report_produces_multiple_sentences_when_history_is_known() -> None:
+    """Splitting the elimination fact from the points/history fact into
+    separate sentences (rather than one giant dash-joined sentence) is
+    the whole point of this polish pass."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        previous_year_round="R64",
+        previous_year_round_label="the Round of 64",
+        previous_year_points=35,
+        points_delta=30,
+        is_new_development=True,
+    )
+
+    sentence = build_tournament_status_sentence(status, "Emma Navarro", random.Random(1))
+
+    assert sentence is not None
+    # At least two sentences, each properly capitalized/punctuated.
+    parts = [p for p in sentence.split(". ") if p]
+    assert len(parts) >= 2
+    for part in parts:
+        assert part[0].isupper()
+
+
+def test_narration_still_varies_across_seeds_after_the_polish_pass() -> None:
+    """Regression guard: the rewritten phrase pools must still produce
+    genuine day-to-day variation, not a single fixed template."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R32",
+        round_label="the Round of 32",
+        eliminated_by="Jessica Pegula",
+        points_earned=65,
+        is_new_development=True,
+    )
+
+    outputs = {
+        build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed)) for seed in range(30)
+    }
+    assert len(outputs) > 1
