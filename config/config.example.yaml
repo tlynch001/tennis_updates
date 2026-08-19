@@ -115,6 +115,36 @@ rankings:
   # never be displayed as if it were the official ranking.
   projected_rankings_enabled: false
 
+# --- Tournament elimination context (on by default) ------------------------
+# When a Top N or featured player has been eliminated from (or has won) her
+# current tournament, narration can mention the round she reached, the
+# eliminator's name, the official ranking points that finish earned, and -
+# when reliably available - how that compares with her result at the same
+# tournament last year. See README.md's "Tournament elimination context"
+# section for the full graceful-degradation hierarchy and example narration.
+#
+# This only ever has an effect when the configured match_provider has
+# genuine tournament-draw visibility - today that's only `wta_official`
+# (whether used directly or as a `best_of` source); every other provider
+# simply never populates this, so leaving `enabled: true` here has zero
+# effect unless wta_official is in play. Toggling it off (or on) never
+# changes rankings, movement, or match results - only this one narration
+# feature.
+tournament_status:
+  enabled: true
+  # The extra "what did she do at this same tournament last year"
+  # comparison requires one additional (free, WTA-official) API call per
+  # player who is actually eliminated or crowned champion *this run* -
+  # typically zero to a handful of players on a normal day, never one call
+  # per tracked player. Turn this off on its own to keep the elimination
+  # round/points context while skipping that extra call entirely.
+  previous_year_lookback_enabled: true
+  # Official WTA singles ranking points by tournament category/round -
+  # deterministic application data, never computed or guessed by an LLM.
+  # See data/wta_points_table.yaml's own header comment for sourcing notes
+  # and how to extend it (e.g. if the WTA revises its points schedule).
+  points_table_path: data/wta_points_table.yaml
+
 # --- Featured player (recurring editorial segment, disabled by default) ----
 # A short, playful, recurring spotlight on one specific player, layered on
 # top of - never mixed into - the factual Top N coverage above. Every fact
