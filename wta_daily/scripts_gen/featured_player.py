@@ -18,8 +18,12 @@ import random
 
 from wta_daily.models import FeaturedPlayerReport, Movement
 from wta_daily.scripts_gen import featured_player_phrases as fp
+from wta_daily.scripts_gen.name_utils import first_name as _first_name
 from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
-from wta_daily.scripts_gen.tournament_status_narration import build_tournament_status_sentence
+from wta_daily.scripts_gen.tournament_status_narration import (
+    build_tournament_status_sentence,
+    supersedes_inactivity_narration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +108,21 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     # joke twice - see _pick_unused_favorite_label's docstring.
     used_labels: set[str] = set()
 
+    # The intro sentence is the one place her full name is used - every
+    # sentence after this refers to her by first name instead, per the
+    # general "introduce once, then use the first name naturally" rule
+    # (see wta_daily.scripts_gen.name_utils).
+    name = _first_name(featured.name)
+
     intro = rng.choice(fp.AMERICA_FAVORITE_INTROS)
     label = _pick_unused_favorite_label(rng, used_labels)
     intro_sentence = f"{intro} {label}, {featured.name}."
 
-    status_sentence = _status_sentence(featured, top_n, rng)
+    status_sentence = _status_sentence(featured, top_n, rng, name)
 
     parts = [_finish(intro_sentence), _finish(status_sentence)]
 
-    match_sentence = _match_sentence(featured, top_n, rng, used_labels)
+    match_sentence = _match_sentence(featured, top_n, rng, used_labels, name)
     if match_sentence:
         parts.append(_finish(match_sentence))
 
@@ -133,12 +143,12 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     return " ".join(parts)
 
 
-def _status_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Random) -> str:
+def _status_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Random, name: str) -> str:
     assert featured.rank is not None  # guarded by build_segment
 
     if featured.rank == 1:
         tier_phrase = rng.choice(fp.AMERICA_FAVORITE_NUMBER_ONE)
-        return f"{featured.name} sits at the very top of the rankings at world number one - {tier_phrase}"
+        return f"{name} sits at the very top of the rankings at world number one - {tier_phrase}"
 
     movement_pool = _MOVEMENT_FRAGMENTS.get(featured.movement, fp.AMERICA_FAVORITE_MOVEMENT_UNKNOWN)  # type: ignore[arg-type]
     movement_fragment = rng.choice(movement_pool).format(rank=featured.rank)
@@ -148,18 +158,31 @@ def _status_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Ran
     else:
         tier_phrase = rng.choice(fp.AMERICA_FAVORITE_PURSUIT).format(n=top_n)
 
-    return f"{featured.name} is {movement_fragment}, and {tier_phrase}"
+    return f"{name} is {movement_fragment}, and {tier_phrase}"
 
 
 def _match_sentence(
-    featured: FeaturedPlayerReport, top_n: int, rng: random.Random, used_labels: set[str]
+    featured: FeaturedPlayerReport, top_n: int, rng: random.Random, used_labels: set[str], name: str
 ) -> str | None:
+    # Once we know her tournament run is already over (eliminated or
+    # champion), generic "had the day off"/"result couldn't be
+    # confirmed" filler about *yesterday specifically* reads as an odd
+    # non-sequitur right next to that more important news - the
+    # elimination/title context appended in build_segment takes
+    # precedence instead. A genuine win/loss match result for the target
+    # date is never suppressed by this - only this "nothing to say
+    # either way" filler is. See
+    # wta_daily.scripts_gen.tournament_status_narration.supersedes_inactivity_narration.
+    superseded = supersedes_inactivity_narration(featured.tournament_status)
+
     if featured.match_error:
-        return rng.choice(fp.AMERICA_FAVORITE_MATCH_UNKNOWN)
+        return None if superseded else rng.choice(fp.AMERICA_FAVORITE_MATCH_UNKNOWN)
 
     if featured.match is None:
+        if superseded:
+            return None
         favorite = _pick_unused_favorite_label(rng, used_labels)
-        return rng.choice(fp.AMERICA_FAVORITE_NO_MATCH).format(favorite=favorite, name=featured.name)
+        return rng.choice(fp.AMERICA_FAVORITE_NO_MATCH).format(favorite=favorite, name=name)
 
     match = featured.match
     score = format_score_for_narration(match.score)
@@ -167,7 +190,7 @@ def _match_sentence(
         favorite = _pick_unused_favorite_label(rng, used_labels)
         return rng.choice(fp.AMERICA_FAVORITE_WIN).format(
             favorite=favorite,
-            name=featured.name,
+            name=name,
             opponent=match.opponent,
             score=score,
             tournament=match.tournament,
@@ -186,7 +209,7 @@ def _match_sentence(
     base_favorite = _pick_unused_favorite_label(rng, used_labels)
     base = rng.choice(fp.AMERICA_FAVORITE_LOSS).format(
         favorite=base_favorite,
-        name=featured.name,
+        name=name,
         opponent=match.opponent,
         score=score,
         tournament=match.tournament,

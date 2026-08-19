@@ -30,7 +30,10 @@ from wta_daily.plugins.registry import script_registry
 from wta_daily.scripts_gen import featured_player, phrases
 from wta_daily.scripts_gen.phrase_utils import PhraseCycler as _PhraseCycler
 from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
-from wta_daily.scripts_gen.tournament_status_narration import build_tournament_status_sentence
+from wta_daily.scripts_gen.tournament_status_narration import (
+    build_tournament_status_sentence,
+    supersedes_inactivity_narration,
+)
 
 #: A points gap is only treated as a storyline worth mentioning when it's
 #: genuinely tight - see _points_gap_sentence. Loosened past this, nearly
@@ -139,10 +142,23 @@ class TemplateScriptGenerator(ScriptGenerator):
         else:
             sentence = f"{player.name} {movement_clause}"
 
+        # Once we know a player's tournament run is already over
+        # (eliminated or champion), a generic "no match to report"/
+        # "couldn't be confirmed" filler about *yesterday specifically*
+        # reads as an odd non-sequitur right next to that more important
+        # news - the elimination/title context appended below takes
+        # precedence instead. A genuine win/loss match result for the
+        # target date is never suppressed by this - only the "we have
+        # nothing to say either way" filler is.
+        superseded = supersedes_inactivity_narration(player.tournament_status)
         if player.match_error:
-            sentence += ", though yesterday's results couldn't be confirmed for the tour today."
+            sentence += (
+                "."
+                if superseded
+                else ", though yesterday's results couldn't be confirmed for the tour today."
+            )
         elif player.match is None:
-            sentence += f", and {cyclers['no_match'].next()}."
+            sentence += "." if superseded else f", and {cyclers['no_match'].next()}."
         else:
             pool = cyclers["win"] if player.match.won else cyclers["loss"]
             match_clause = pool.next().format(

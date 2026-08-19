@@ -396,3 +396,165 @@ def test_active_tournament_status_produces_no_elimination_language() -> None:
 
     assert segment is not None
     assert "eliminated" not in segment.lower()
+
+
+# --- Narration-polish follow-up: precedence, naming ---------------------
+
+
+def test_eliminated_featured_player_never_gets_rest_day_filler() -> None:
+    featured = _featured(
+        rank=28,
+        match=None,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            tournament="Cincinnati",
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Jessica Pegula",
+            points_earned=65,
+            is_new_development=True,
+        ),
+    )
+
+    for i in range(20):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"no-rest-day-{i}"))
+        assert segment is not None
+        for phrase in fp.AMERICA_FAVORITE_NO_MATCH:
+            assert phrase.format(name="Emma", favorite="favorite") not in segment
+        assert "rest day" not in segment.lower()
+        assert "day off" not in segment.lower()
+        assert "did not take the court" not in segment.lower()
+
+
+def test_eliminated_featured_player_never_gets_match_unknown_filler() -> None:
+    featured = _featured(
+        rank=28,
+        match=None,
+        match_error="simulated outage",
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Jessica Pegula",
+            is_new_development=True,
+        ),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("no-match-unknown"))
+
+    assert segment is not None
+    for phrase in fp.AMERICA_FAVORITE_MATCH_UNKNOWN:
+        assert phrase not in segment
+
+
+def test_champion_featured_player_never_gets_rest_day_filler() -> None:
+    featured = _featured(
+        rank=5,
+        match=None,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.CHAMPION,
+            round_reached="W",
+            round_label="the title",
+            points_earned=1000,
+            is_new_development=True,
+        ),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("champion-no-rest-day"))
+
+    assert segment is not None
+    assert "rest day" not in segment.lower()
+
+
+def test_a_real_match_result_is_never_suppressed_even_when_eliminated() -> None:
+    """The suppression only targets generic 'nothing to say either way'
+    filler - a genuine win/loss result for the target date is real news
+    and must still appear."""
+
+    featured = _featured(
+        rank=28,
+        match=_match(won=False, opponent="Jessica Pegula", score="7-5,6-3"),
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Jessica Pegula",
+            is_new_development=True,
+        ),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("real-match-kept"))
+
+    assert segment is not None
+    assert "7-5, 6-3" in segment
+
+
+def test_active_status_does_not_suppress_the_generic_no_match_filler() -> None:
+    """Suppression is specific to a *concluded* run (eliminated/champion) -
+    an ACTIVE player with no match that day still gets the normal filler
+    sentence, e.g. 'day off'/'rest day'/'no match to report'."""
+
+    featured = _featured(
+        rank=28,
+        match=None,
+        tournament_status=TournamentRunStatus(state=TournamentState.ACTIVE, tournament="Cincinnati"),
+    )
+
+    found = False
+    for i in range(30):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"active-still-normal-{i}"))
+        assert segment is not None
+        lowered = segment.lower()
+        if any(marker in lowered for marker in ("day off", "rest day", "no match to report")):
+            found = True
+            break
+    assert found
+
+
+def test_full_name_is_used_only_once_in_the_segment() -> None:
+    """The full name should appear only in the intro sentence - every
+    later reference (status, match, elimination context) should use her
+    first name instead of mechanically repeating the full name."""
+
+    featured = _featured(
+        rank=28,
+        match=_match(won=False, opponent="Jessica Pegula", score="7-5 6-3"),
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Jessica Pegula",
+            points_earned=65,
+            previous_year_round="R64",
+            previous_year_round_label="the Round of 64",
+            points_delta=30,
+            is_new_development=True,
+        ),
+    )
+
+    for i in range(20):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"single-full-name-{i}"))
+        assert segment is not None
+        assert segment.count("Navarro") == 1
+        assert "Emma" in segment
+
+
+def test_first_name_appears_after_the_eliminator_is_named() -> None:
+    featured = _featured(
+        rank=28,
+        match=None,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Jessica Pegula",
+            points_earned=65,
+            is_new_development=True,
+        ),
+    )
+
+    for i in range(20):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"disambiguate-{i}"))
+        assert segment is not None
+        pegula_index = segment.index("Pegula")
+        assert "Emma" in segment[pegula_index:]

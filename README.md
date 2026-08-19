@@ -610,9 +610,9 @@ vs. daily match activity" rule above.
 
 ### Narration behavior
 
-`wta_daily/scripts_gen/tournament_status_narration.py` builds one sentence
-from a `TournamentRunStatus`, shared identically by the Top N narration
-(`template_generator.py`) and the featured-player segment
+`wta_daily/scripts_gen/tournament_status_narration.py` builds one or more
+sentences from a `TournamentRunStatus`, shared identically by the Top N
+narration (`template_generator.py`) and the featured-player segment
 (`featured_player.py`) - there is no separate, duplicated, or
 Emma-specific version of this logic anywhere.
 
@@ -621,18 +621,50 @@ Emma-specific version of this logic anywhere.
   `wta_daily/persistence/tournament_status_store.py` against
   `data/tournament-status-history.json`, keyed by player + tournament +
   season + round reached) is `True` the first day a given result appears
-  and `False` on every subsequent day it's still current - e.g. "Player X
-  is out of the tournament, eliminated by Y in the Round of 16, a result
-  worth 120 ranking points" the first day, just "Player X remains out of
-  the draw here, having fallen in the Round of 16" afterward.
+  and `False` on every subsequent day it's still current - e.g. "Her
+  tournament run is over after Jessica Pegula knocked her out in the Round
+  of 32. That finish earns Emma 65 ranking points, improving on the Round
+  of 64 she reached here last year." the first day, just "Emma remains out
+  of the draw here, having fallen in the Round of 32." afterward.
 - **Never fabricates.** A missing eliminator name, missing points-table
   entry, or missing/unreliable previous-year data each independently
   degrades that one clause to nothing rather than guessing - the
   hierarchy is: full detail -> historical comparison omitted -> points
-  omitted -> only the bare elimination/round fact remains. `active`,
-  `did_not_participate`, and `unknown` states add nothing to the script at
-  all (there is no "she did not play" filler where the real story is that
-  she was already eliminated).
+  omitted -> only the bare elimination/round fact remains.
+- **Elimination/title context takes precedence over generic inactivity
+  filler.** `supersedes_inactivity_narration()` is checked by both
+  `template_generator.py` and `featured_player.py` before adding a "no
+  completed match to report"/"result couldn't be confirmed" sentence for
+  the target date - once a player's tournament run is known to be over,
+  that generic filler is skipped entirely rather than sitting next to the
+  more important elimination/title news (e.g. never "Yesterday was a rest
+  day for Emma. It's over for Emma at this tournament..." in the same
+  segment). `active`/`did_not_participate`/`unknown` states are
+  unaffected - the ordinary daily filler still applies to them. A genuine
+  win/loss match result for the target date is never suppressed by this,
+  only the "nothing to report either way" filler is.
+- **First name after the introduction, not the full name every time.**
+  Every sentence built here refers to the player only by first name
+  (`wta_daily/scripts_gen/name_utils.py`) or an unambiguous pronoun, never
+  her full name again - the caller (Top N per-player sentence or the
+  featured-player segment's intro) is always the one place her full name
+  is used. The ranking-points sentence specifically uses her first name
+  (never a bare "she") as its subject, since the immediately preceding
+  sentence may have just named the player who eliminated her - "she
+  earned 65 points" would be ambiguous about which "she"; "Emma earned 65
+  ranking points" is not.
+- **No duplicate articles in historical comparisons.**
+  `round_label`/`previous_year_round_label` values already carry their
+  own leading article ("the Round of 16", "the quarterfinals"), so every
+  comparison phrase places a preposition or verb (`improving on`/`better
+  than`/`matching`/etc.) directly before the placeholder rather than
+  another determiner (`the`/`her`/`last year's`) - avoiding the "better
+  than the the Round of 64..." bug this was rewritten to fix.
+- **"Ranking points," not just "points."** The points-earned sentence
+  always calls out that the number is ranking points specifically, so
+  it's unmistakable what it represents (varied wording, e.g. "That finish
+  earns Emma 65 ranking points" / "Emma picks up 65 ranking points for
+  that result").
 - **Round names are spoken naturally**, not raw codes -
   `wta_daily/rounds.py` normalizes the WTA backend's draw-size-relative
   numeric round IDs (`"1"`/`"2"`/`"3"`/`"4"`, `"Q"`/`"S"`/`"F"`) into a

@@ -8,7 +8,11 @@ templates (``{rank}``, ``{opponent}``, ``{score}``, ``{tournament}``,
 ``{round}``, ``{name}``) still comes straight from
 :class:`~wta_daily.models.FeaturedPlayerReport`, built from the same
 provider architecture as the Top N (see :mod:`wta_daily.pipeline`) - only
-the *wording* around those facts has a sense of humor. See
+the *wording* around those facts has a sense of humor. ``{name}`` is
+filled in with her *first* name by :mod:`wta_daily.scripts_gen.featured_player`
+(her full name is only ever used once, in the segment's intro sentence -
+see :mod:`wta_daily.scripts_gen.name_utils`), so every template here reads
+naturally as a follow-up reference, not a re-introduction. See
 :mod:`wta_daily.scripts_gen.featured_player` for how these are composed,
 and the README's "Featured player" section for the tone guidelines.
 
