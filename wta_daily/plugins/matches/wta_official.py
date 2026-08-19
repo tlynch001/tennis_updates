@@ -466,13 +466,23 @@ class WtaOfficialMatchProvider(MatchProvider):
             )
             return enriched
 
+        # The previous year's edition can (rarely) have had a different
+        # draw size than this year's - RoundID normalization is
+        # draw-size-relative, so this year's draw_size must never be
+        # reused to interpret last year's RoundIDs/points. Falls back to
+        # None (the same safe "unknown draw size" default used elsewhere)
+        # if that edition's own catalogue entry can't be located, rather
+        # than guessing with the wrong year's size.
+        previous_edition = self._find_tournament_catalogue_entry(group_id, previous_year)
+        previous_draw_size = previous_edition.draw_size if previous_edition else None
+
         previous_status = determine_tournament_run_status(
             previous_fixtures,
             player_id,
             tournament_name=status.tournament or "",
             tournament_group_id=group_id,
             category=status.category,
-            draw_size=draw_size,
+            draw_size=previous_draw_size,
         )
         if previous_status.state not in (TournamentState.ELIMINATED, TournamentState.CHAMPION):
             # DID_NOT_PARTICIPATE (never played it last year), or ACTIVE
@@ -483,7 +493,7 @@ class WtaOfficialMatchProvider(MatchProvider):
 
         previous_points = (
             self._points_table.lookup(
-                previous_status.category, previous_status.round_reached, draw_size=draw_size
+                previous_status.category, previous_status.round_reached, draw_size=previous_draw_size
             )
             if self._points_table
             else None
@@ -549,6 +559,61 @@ class WtaOfficialMatchProvider(MatchProvider):
                             )
                         )
         return active
+
+    def _find_tournament_catalogue_entry(
+        self, group_id: Any, year: Any
+    ) -> _ActiveTournament | None:
+        """Locate one specific tournament edition's own catalogue entry -
+        used only to get *that edition's own* ``level``/``draw_size`` for
+        the previous-year comparison (see ``_enrich_tournament_status``).
+
+        This matters because :func:`wta_daily.rounds.normalize_wta_round_id`
+        is draw-size-relative: a tournament's draw size can (rarely) differ
+        between editions, so interpreting a previous year's ``RoundID``
+        with *this* year's draw size would be wrong. Draw size changing
+        year to year is uncommon enough not to warrant a bigger redesign -
+        this is a small, targeted lookup, not a general "look up any
+        tournament edition" feature.
+
+        Scans backward from the end of the catalogue exactly like
+        :meth:`_find_active_tournaments`, matched by ``(group_id, year)``
+        instead of a date range, bounded to twice the normal scan window
+        (the catalogue is roughly chronological, so one prior year's
+        edition of the same tournament is only a small, bounded number of
+        pages further back than "this season" - never the whole
+        ~19,000-entry catalogue). Pages already fetched this run by
+        ``_find_active_tournaments`` are served from
+        ``WtaOfficialApiClient``'s own per-page cache, so this typically
+        costs few or zero *additional* HTTP requests. Returns ``None``
+        (never a guess) if the edition isn't found within that window -
+        callers fall back to ``draw_size=None`` (the same safe default
+        already used whenever a draw size is simply unknown).
+        """
+
+        first_page = self._client.list_tournaments_page(page=0, page_size=100)
+        total_entries = int(first_page.get("pageInfo", {}).get("numEntries", 0) or 0)
+        last_page = max(0, (total_entries - 1) // 100) if total_entries else 0
+        scan_pages = self._catalogue_scan_pages * 2
+        start_page = max(0, last_page - scan_pages + 1)
+
+        target_group_id = str(group_id)
+        target_year = str(year)
+        for page in range(last_page, start_page - 1, -1):
+            data = self._client.list_tournaments_page(page=page, page_size=100)
+            for entry in data.get("content", []):
+                group = entry.get("tournamentGroup") or {}
+                if str(group.get("id")) != target_group_id or str(entry.get("year")) != target_year:
+                    continue
+                level = str(entry.get("level", "")).upper()
+                draw_size = entry.get("singlesDrawSize")
+                return _ActiveTournament(
+                    group_id=group.get("id"),
+                    year=entry.get("year"),
+                    name=str(group.get("name", "Unknown Tournament")),
+                    level=level,
+                    draw_size=int(draw_size) if draw_size else None,
+                )
+        return None
 
     @staticmethod
     def _build_match_result_from_fixture(

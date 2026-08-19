@@ -333,14 +333,18 @@ def _tournament_catalogue_entry(
     level: str = "WTA 1000",
     start_date: str = "2026-08-13",
     end_date: str = "2026-08-23",
+    draw_size: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    entry: dict[str, Any] = {
         "tournamentGroup": {"id": group_id, "name": name, "level": level},
         "year": year,
         "startDate": start_date,
         "endDate": end_date,
         "level": level,
     }
+    if draw_size is not None:
+        entry["singlesDrawSize"] = draw_size
+    return entry
 
 
 def _tournament_level_fixture(
@@ -865,6 +869,48 @@ def test_previous_year_lookup_failure_degrades_gracefully(monkeypatch: pytest.Mo
     assert status.round_reached == "R16"
     assert status.points_earned == 120
     assert status.previous_year_round is None  # gracefully omitted, not fabricated
+
+
+def test_previous_year_edition_with_a_different_draw_size_uses_its_own_draw_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: the previous year's RoundID must be interpreted
+    using *that edition's own* draw size, never this year's - draw size
+    changing between editions is rare, but RoundID normalization is
+    draw-size-relative, so reusing the wrong year's size would silently
+    misidentify the round (and therefore the points) reached last year.
+
+    This year's draw is 56 (3 numbered rounds before QF), last year's was
+    32 (2 numbered rounds) - the same raw RoundID "2" means R32 this year
+    but R16 last year, with different points (32 vs. 60) for WTA 500.
+    """
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[
+            _tournament_catalogue_entry(year=2026, level="WTA 500", draw_size=56),
+            _tournament_catalogue_entry(year=2025, level="WTA 500", draw_size=32),
+        ],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="2", winner="3")
+            ],
+            (1017, 2025): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P5", round_id="2", winner="3")
+            ],
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "eliminated"
+    # This year (draw size 56): RoundID "2" -> R32.
+    assert status.round_reached == "R32"
+    assert status.points_earned == 32
+    # Last year (draw size 32): the *same* RoundID "2" -> R16, not R32.
+    assert status.previous_year_round == "R16"
+    assert status.previous_year_points == 60
 
 
 def test_points_earned_is_none_when_category_has_no_points_table_entry(
