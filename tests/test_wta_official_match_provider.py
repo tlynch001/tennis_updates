@@ -651,3 +651,242 @@ def test_get_matches_for_date_finds_second_player_slot(monkeypatch: pytest.Monke
     assert "P1" in result.matches
     assert result.matches["P1"].won is True
     assert result.matches["P1"].opponent == "Test Player"  # slot A's name, per the fixture helper's defaults
+
+
+# ---------------------------------------------------------------------------
+# Tournament-status detection (elimination, points, previous-year callback)
+# ---------------------------------------------------------------------------
+
+
+def test_get_matches_for_date_reports_elimination_with_round_and_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],  # WTA 1000, default
+        fixtures_by_tournament={
+            (1017, 2026): [
+                # Won an earlier round...
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P4", round_id="2", winner="2"),
+                # ...then lost in the Round of 16.
+                _tournament_level_fixture(
+                    player_id_a="P1",
+                    player_id_b="P3",
+                    round_id="4",
+                    winner="3",
+                    first_b="Rival",
+                    last_b="Player",
+                ),
+            ]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "eliminated"
+    assert status.round_reached == "R16"
+    assert status.round_label == "the Round of 16"
+    assert status.eliminated_by == "Rival Player"
+    assert status.points_earned == 120  # WTA 1000, R16, default (96) draw size
+    # No 2025 fixtures were configured for this tournament, so there's
+    # genuinely nothing to compare against - never invented.
+    assert status.previous_year_round is None
+    assert status.previous_year_points is None
+    assert status.points_delta is None
+
+
+def test_get_matches_for_date_reports_champion(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P4", round_id="F", winner="2")
+            ]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "champion"
+    assert status.round_reached == "W"
+    assert status.round_label == "the title"
+    assert status.points_earned == 1000  # WTA 1000 champion points
+
+
+def test_get_matches_for_date_reports_active_when_a_fixture_is_still_unplayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P4", round_id="2", winner="2"),
+                _tournament_level_fixture(
+                    player_id_a="P1", player_id_b="P3", round_id="4", winner="", match_state="O"
+                ),
+            ]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "active"
+    assert status.round_reached is None
+    assert status.points_earned is None
+
+
+def test_get_matches_for_date_reports_did_not_participate_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(player_id_a="OTHER1", player_id_b="OTHER2")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "did_not_participate"
+    assert status.tournament is None
+
+
+def test_tournament_status_is_empty_when_the_feature_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = WtaOfficialMatchProvider(tournament_status_enabled=False)
+    monkeypatch.setattr(
+        provider._client,
+        "list_tournaments_page",
+        lambda page, page_size=100: (
+            _catalogue_page(page=page, total_entries=1, entries=[_tournament_catalogue_entry()])
+            if page == 0
+            else _catalogue_page(page=page, entries=[])
+        ),
+    )
+    monkeypatch.setattr(
+        provider._client,
+        "get_tournament_matches",
+        lambda group_id, year, page_size=500: [
+            _tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="4", winner="3")
+        ],
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.tournament_status == {}
+
+
+def test_previous_year_callback_computes_points_delta(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                # Eliminated in the quarterfinals this year.
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="Q", winner="3")
+            ],
+            (1017, 2025): [
+                # Only reached the Round of 32 last year.
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P5", round_id="3", winner="3")
+            ],
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.round_reached == "QF"
+    assert status.points_earned == 215  # WTA 1000 QF
+    assert status.previous_year_round == "R32"
+    assert status.previous_year_points == 65  # WTA 1000 R32
+    assert status.points_delta == 215 - 65
+
+
+def test_previous_year_lookback_can_be_disabled_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="Q", winner="3")
+            ],
+            (1017, 2025): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P5", round_id="3", winner="3")
+            ],
+        },
+    )
+    provider._previous_year_lookback_enabled = False
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.points_earned == 215  # still computed - this is independent of the lookback flag
+    assert status.previous_year_round is None
+    assert status.previous_year_points is None
+    assert status.points_delta is None
+
+
+def test_previous_year_lookup_failure_degrades_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A network error while fetching *last year's* fixtures must never
+    take down this year's (successfully fetched) elimination context."""
+
+    provider = WtaOfficialMatchProvider()
+    monkeypatch.setattr(
+        provider._client,
+        "list_tournaments_page",
+        lambda page, page_size=100: (
+            _catalogue_page(page=page, total_entries=1, entries=[_tournament_catalogue_entry()])
+            if page == 0
+            else _catalogue_page(page=page, entries=[])
+        ),
+    )
+
+    def _get_tournament_matches(group_id: Any, year: Any, page_size: int = 500) -> list[dict]:
+        if year == 2026:
+            return [_tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="4", winner="3")]
+        raise RuntimeError("simulated outage fetching last year's draw")
+
+    monkeypatch.setattr(provider._client, "get_tournament_matches", _get_tournament_matches)
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "eliminated"
+    assert status.round_reached == "R16"
+    assert status.points_earned == 120
+    assert status.previous_year_round is None  # gracefully omitted, not fabricated
+
+
+def test_points_earned_is_none_when_category_has_no_points_table_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WTA Finals' round-robin scoring isn't in the points table by design
+    (see data/wta_points_table.yaml) - a lookup for it must degrade to
+    ``None``, never raise or guess."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(level="WTA FINALS")],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                _tournament_level_fixture(player_id_a="P1", player_id_b="P3", round_id="S", winner="3")
+            ]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    status = result.tournament_status["P1"]
+    assert status.state.value == "eliminated"
+    assert status.round_reached == "SF"
+    assert status.points_earned is None
