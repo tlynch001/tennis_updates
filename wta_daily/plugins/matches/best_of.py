@@ -39,7 +39,7 @@ from typing import Any
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import ConfigurationError, PlayerDataError
-from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking
+from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking, TournamentRunStatus
 from wta_daily.plugins.base import MatchProvider
 from wta_daily.plugins.registry import matches_registry
 
@@ -144,10 +144,19 @@ class BestOfMatchProvider(MatchProvider):
         confidently accounted for every tracked player - not just the ones
         who played. Only if *every* source fails outright for a player do
         we raise, rather than guess.
+
+        Tournament-status context (see
+        :class:`~wta_daily.models.TournamentRunStatus`) is merged in the
+        same spirit: the first source to report a player's status wins,
+        since - like matches - sources are expected to agree on real-world
+        facts. Only ``wta_official`` currently ever populates this (see its
+        module docstring); every other configured source simply
+        contributes nothing here, exactly like the base class's default.
         """
 
         remaining: dict[str, PlayerRanking] = {p.player_id: p for p in players}
         results: dict[str, MatchResult] = {}
+        tournament_status: dict[str, TournamentRunStatus] = {}
         any_source_succeeded = False
         failures: list[str] = []
 
@@ -170,6 +179,9 @@ class BestOfMatchProvider(MatchProvider):
                     results[player_id] = match
                     del remaining[player_id]
 
+            for player_id, status in source_result.tournament_status.items():
+                tournament_status.setdefault(player_id, status)
+
             for player_id in list(remaining):
                 if player_id not in source_result.unresolved_player_ids:
                     # Confidently ruled out by a source that itself
@@ -181,4 +193,6 @@ class BestOfMatchProvider(MatchProvider):
                 f"All match sources failed while checking {target_date} for "
                 f"{len(remaining)} player(s): " + "; ".join(failures)
             )
-        return MatchLookupResult(matches=results, unresolved_player_ids=frozenset(remaining))
+        return MatchLookupResult(
+            matches=results, unresolved_player_ids=frozenset(remaining), tournament_status=tournament_status
+        )

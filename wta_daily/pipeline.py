@@ -29,6 +29,7 @@ from wta_daily.models import (
     MatchResult,
     PlayerRanking,
     PlayerReport,
+    TournamentRunStatus,
 )
 from wta_daily.movement import (
     compute_movement,
@@ -38,6 +39,7 @@ from wta_daily.movement import (
 )
 from wta_daily.persistence.report_store import DailyOutputStore
 from wta_daily.persistence.snapshot_store import RankingsSnapshotStore
+from wta_daily.persistence.tournament_status_store import TournamentStatusStore
 from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
 from wta_daily.plugins.registry import (
     graphics_registry,
@@ -63,6 +65,7 @@ class DailyPipeline:
         self._config = config
         self._repo_root = repo_root or Path.cwd()
         self._snapshot_store = RankingsSnapshotStore(config.data_dir)
+        self._tournament_status_store = TournamentStatusStore(config.data_dir)
         #: The full rankings response from the most recent run, before it was
         #: sliced down to `top_n` for the report - e.g. Top 25 when `top_n`
         #: is 10 and `rankings_pool_size` is 25 (see AppConfig). Exposed so a
@@ -74,8 +77,26 @@ class DailyPipeline:
         self._rankings_provider = rankings_registry.create(
             config.rankings_provider.name, network=config.network, **config.rankings_provider.options
         )
+        # These three are plain constructor kwargs (like every other match
+        # provider option) - wta_official's own **_ignored catch-all means
+        # every other provider (sample/api_tennis/live_tennis_api/best_of)
+        # simply absorbs and discards them harmlessly, per this project's
+        # "never tightly couple the pipeline to a data source" rule. See
+        # wta_daily.config.TournamentStatusConfig for what each governs.
+        # Merged (rather than passed as separate keyword arguments) so an
+        # explicit `match_provider.options` entry with the same name - e.g.
+        # to force this on/off for one specific provider inside a `best_of`
+        # sources list - always wins over the top-level default.
+        match_provider_kwargs: dict[str, object] = {
+            "tournament_status_enabled": config.tournament_status.enabled,
+            "tournament_status_previous_year_lookback_enabled": (
+                config.tournament_status.previous_year_lookback_enabled
+            ),
+            "tournament_status_points_table_path": config.tournament_status.points_table_path,
+        }
+        match_provider_kwargs.update(config.match_provider.options)
         self._match_provider = matches_registry.create(
-            config.match_provider.name, network=config.network, **config.match_provider.options
+            config.match_provider.name, network=config.network, **match_provider_kwargs
         )
         self._script_generator = script_registry.create(
             config.script.generator, script_config=config.script
@@ -239,7 +260,9 @@ class DailyPipeline:
         tracked_ids = {r.player_id for r in rankings}
         if featured_ranking is not None and featured_ranking.player_id not in tracked_ids:
             match_batch.append(featured_ranking)
-        matches_by_player, batch_error = self._safe_get_matches_for_date(match_batch, match_target_date)
+        matches_by_player, tournament_status_by_player, batch_error = self._safe_get_matches_for_date(
+            match_batch, match_target_date
+        )
         if batch_error:
             logger.warning(
                 "Could not confirm match data for %s - every player below will show "
@@ -261,6 +284,9 @@ class DailyPipeline:
             match = matches_by_player.get(ranking.player_id)
             if match is None:
                 logger.info("%s did not play on %s.", ranking.name, match_target_date.isoformat())
+            tournament_status = self._resolve_tournament_status(
+                ranking.player_id, report_date.year, tournament_status_by_player
+            )
             players.append(
                 PlayerReport(
                     rank=ranking.rank,
@@ -272,6 +298,7 @@ class DailyPipeline:
                     previous_rank=previous_rank,
                     match=match,
                     match_error=batch_error,
+                    tournament_status=tournament_status,
                 )
             )
 
@@ -285,6 +312,7 @@ class DailyPipeline:
                 report_date,
                 has_previous_snapshot,
                 same_official_ranking_list,
+                tournament_status_by_player,
             )
             if featured_build_error:
                 errors.append(featured_build_error)
@@ -318,7 +346,7 @@ class DailyPipeline:
 
     def _safe_get_matches_for_date(
         self, rankings: list[PlayerRanking], target_date: date
-    ) -> tuple[dict[str, MatchResult], str | None]:
+    ) -> tuple[dict[str, MatchResult], dict[str, TournamentRunStatus], str | None]:
         """Batch match lookup for every ranked player, never letting a failure abort the run.
 
         A failure here means the whole lookup for ``target_date`` could not
@@ -333,16 +361,22 @@ class DailyPipeline:
         before this method existed - but is called out in the log, since
         that is worth an operator's attention even though it isn't a hard
         failure.
+
+        Also returns per-player tournament-status context (see
+        :class:`~wta_daily.models.TournamentRunStatus`) - empty on any
+        failure path above, exactly like ``matches``, since there is
+        nothing reliable to report either way when the whole lookup
+        couldn't be confirmed.
         """
 
         try:
             result = self._match_provider.get_matches_for_date(rankings, target_date)
         except (PlayerDataError, DataProviderError) as exc:
             logger.error("Match lookup failed for %s: %s", target_date, exc)
-            return {}, str(exc)
+            return {}, {}, str(exc)
         except Exception as exc:  # noqa: BLE001 - this step must never abort the run
             logger.exception("Unexpected error fetching matches for %s", target_date)
-            return {}, f"Unexpected error fetching matches for {target_date}: {exc}"
+            return {}, {}, f"Unexpected error fetching matches for {target_date}: {exc}"
 
         if result.unresolved_player_ids:
             unresolved_names = [
@@ -355,7 +389,31 @@ class DailyPipeline:
                 target_date.isoformat(),
                 "them" if len(unresolved_names) != 1 else "her",
             )
-        return result.matches, None
+        return result.matches, result.tournament_status, None
+
+    def _resolve_tournament_status(
+        self,
+        player_id: str,
+        year: int,
+        tournament_status_by_player: dict[str, TournamentRunStatus],
+    ) -> TournamentRunStatus | None:
+        """Look up ``player_id``'s tournament-status context for this run
+        (if the configured match provider produced any - see
+        :class:`~wta_daily.models.MatchLookupResult`'s docstring) and, for
+        an ELIMINATED/CHAMPION result, resolve whether this is a genuinely
+        new development or a continuation of what was already reported -
+        see :class:`~wta_daily.persistence.tournament_status_store.TournamentStatusStore`.
+
+        Returns ``None`` (never a fabricated "unknown" record) when the
+        configured provider has no tournament-draw visibility at all,
+        which every consumer downstream must already treat the same as
+        :attr:`~wta_daily.models.TournamentState.UNKNOWN`.
+        """
+
+        status = tournament_status_by_player.get(player_id)
+        if status is None:
+            return None
+        return self._tournament_status_store.resolve_is_new_development(player_id, year, status)
 
     def _safe_resolve_featured_player_ranking(
         self, pool: list[PlayerRanking]
@@ -417,6 +475,7 @@ class DailyPipeline:
         report_date: date,
         has_previous_snapshot: bool,
         same_official_ranking_list: bool,
+        tournament_status_by_player: dict[str, TournamentRunStatus],
     ) -> tuple[FeaturedPlayerReport, str | None]:
         """Build the featured-player section of the report, isolating any
         unexpected failure so it can never break the rest of the pipeline -
@@ -458,6 +517,9 @@ class DailyPipeline:
                     previous_rank=previous_rank,
                     match=matches_by_player.get(ranking.player_id),
                     match_error=batch_error,
+                    tournament_status=self._resolve_tournament_status(
+                        ranking.player_id, report_date.year, tournament_status_by_player
+                    ),
                 ),
                 None,
             )
@@ -589,6 +651,9 @@ class DailyPipeline:
             youtube_uploads_path = self._config.data_dir / "youtube-uploads.json"
             if youtube_uploads_path.exists():
                 paths.append(youtube_uploads_path)
+            tournament_status_history_path = self._config.data_dir / "tournament-status-history.json"
+            if tournament_status_history_path.exists():
+                paths.append(tournament_status_history_path)
             commit_and_push(self._repo_root, paths, report_date, self._config.git)
         except GitAutomationError as exc:
             logger.error("Git automation failed: %s", exc)

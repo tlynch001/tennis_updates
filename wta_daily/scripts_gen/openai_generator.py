@@ -15,7 +15,7 @@ import logging
 import os
 
 from wta_daily.config import ScriptConfig
-from wta_daily.models import DailyReport
+from wta_daily.models import DailyReport, TournamentRunStatus, TournamentState
 from wta_daily.plugins.base import ScriptGenerator
 from wta_daily.plugins.registry import script_registry
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
@@ -78,8 +78,57 @@ _SYSTEM_PROMPT = (
     "world No. 1. Every fact you state about this player (rank, movement, match result) must "
     "come only from the 'Featured player' data given below - if her rank is not given, omit "
     "the segment entirely rather than guessing; if her match result is not given, do not "
-    "mention a match at all for her."
+    "mention a match at all for her. "
+    "Some players (Top N or the featured player) may have a 'Tournament status' line. Use it "
+    "for elimination/title context ONLY - who eliminated her, what round she reached, ranking "
+    "points that finish earned, and (if given) how it compares with her result at the same "
+    "event last year. Every number and fact in that line (round, eliminator, points, previous "
+    "year's round/points/net swing) is precomputed application data - copy it into natural "
+    "prose, but NEVER calculate, estimate, or restate it differently, and NEVER invent a "
+    "previous-year comparison, round name, eliminator, or points figure that isn't explicitly "
+    "given. If a 'Tournament status' line says 'active' or 'did not participate' or 'unknown', "
+    "say nothing about tournament elimination/title context for that player at all - do not "
+    "say she 'did not play' just because there's no ranking-list news for her either way. If "
+    "the line's detail level is 'brief' (a result already reported on an earlier day), keep it "
+    "to one short clause (e.g. 'remains out of the draw, having fallen in the quarterfinals') "
+    "rather than repeating every detail again. If it's 'detailed' (first time this exact result "
+    "is being reported), you may use the full detail given. A 'net points swing' figure (if "
+    "given) describes what happens once last year's result eventually rolls off the rolling "
+    "52-week ranking window - NEVER phrase it as an immediate ranking change, gain, or points "
+    "total; phrase it as a future/eventual effect, exactly like the general 'next official "
+    "ranking' rule above."
 )
+
+
+def _tournament_status_line(status: TournamentRunStatus | None) -> str | None:
+    """A single precomputed-facts line for the LLM to phrase (never
+    recompute) - ``None`` when there's nothing worth mentioning.
+
+    Only ELIMINATED/CHAMPION get a substantive line; ACTIVE/
+    DID_NOT_PARTICIPATE/UNKNOWN get an explicit "nothing to report" line
+    so the model doesn't need to guess why it's absent, but the system
+    prompt tells it to say nothing narration-wise for those states either
+    way.
+    """
+
+    if status is None:
+        return None
+    if status.state not in (TournamentState.ELIMINATED, TournamentState.CHAMPION):
+        return f"{status.state.value}, no elimination/title context to add"
+
+    detail = "detailed" if status.is_new_development else "brief"
+    parts = [f"{status.state.value} ({detail})"]
+    if status.round_label:
+        parts.append(f"round reached: {status.round_label}")
+    if status.eliminated_by:
+        parts.append(f"eliminated by: {status.eliminated_by}")
+    if status.points_earned is not None:
+        parts.append(f"points earned this run: {status.points_earned}")
+    if status.previous_year_round_label:
+        parts.append(f"previous year's round at this event: {status.previous_year_round_label}")
+    if status.points_delta is not None:
+        parts.append(f"net points swing vs. previous year once it rolls off: {status.points_delta}")
+    return "; ".join(parts)
 
 
 def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
@@ -109,11 +158,15 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             )
         elif player.match_error:
             match_desc = f"match data unavailable ({player.match_error})"
-        lines.append(
+        line = (
             f"- Rank {player.rank} (movement: {player.movement.value}, "
             f"previous rank: {player.previous_rank}): {player.name}, {player.points} points. "
             f"Latest match: {match_desc}."
         )
+        status_line = _tournament_status_line(player.tournament_status)
+        if status_line:
+            line += f" Tournament status: {status_line}."
+        lines.append(line)
 
     featured = report.featured_player
     if featured is not None:
@@ -133,12 +186,16 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
                 )
             elif featured.match_error:
                 match_desc = f"match data unavailable ({featured.match_error})"
-            lines.append(
+            featured_line = (
                 f"- {featured.name}: rank {featured.rank} (movement: "
                 f"{featured.movement.value if featured.movement else 'unknown'}, previous rank: "
                 f"{featured.previous_rank}), in Top {len(report.players)}: "
                 f"{featured.rank <= len(report.players)}. Latest match: {match_desc}."
             )
+            status_line = _tournament_status_line(featured.tournament_status)
+            if status_line:
+                featured_line += f" Tournament status: {status_line}."
+            lines.append(featured_line)
 
     return "\n".join(lines)
 

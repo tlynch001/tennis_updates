@@ -10,6 +10,8 @@ from wta_daily.models import (
     Movement,
     PlayerRanking,
     PlayerReport,
+    TournamentRunStatus,
+    TournamentState,
 )
 
 
@@ -349,6 +351,98 @@ def test_daily_report_featured_player_defaults_to_none() -> None:
 
     assert restored.featured_player is None
     assert restored.to_dict()["featured_player"] is None
+
+
+def test_tournament_run_status_round_trip_full() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        tournament_group_id="901",
+        category="WTA 1000",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Elena Rybakina",
+        points_earned=120,
+        previous_year_round="QF",
+        previous_year_round_label="the quarterfinals",
+        previous_year_points=215,
+        points_delta=-95,
+        is_new_development=True,
+    )
+
+    restored = TournamentRunStatus.from_dict(status.to_dict())
+
+    assert restored == status
+
+
+def test_tournament_run_status_round_trip_minimal() -> None:
+    status = TournamentRunStatus(state=TournamentState.DID_NOT_PARTICIPATE)
+
+    restored = TournamentRunStatus.from_dict(status.to_dict())
+
+    assert restored == status
+    assert restored.tournament is None
+    assert restored.points_earned is None
+
+
+def test_tournament_run_status_defaults_to_unknown_for_legacy_data() -> None:
+    restored = TournamentRunStatus.from_dict({})
+
+    assert restored.state == TournamentState.UNKNOWN
+
+
+def test_player_report_round_trip_includes_tournament_status() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED, tournament="Cincinnati", round_reached="R16", points_earned=120
+    )
+    report = PlayerReport(
+        rank=4,
+        name="Coco Gauff",
+        player_id="p4",
+        country_code="USA",
+        points=8000,
+        movement=Movement.SAME,
+        tournament_status=status,
+    )
+
+    restored = PlayerReport.from_dict(report.to_dict())
+
+    assert restored.tournament_status == status
+
+
+def test_player_report_without_tournament_status_round_trips_to_none() -> None:
+    """Old report.json files (or a provider without draw visibility) must
+    load fine with no tournament_status key at all."""
+
+    report = PlayerReport(
+        rank=1, name="Player One", player_id="p1", country_code="USA", points=1000, movement=Movement.SAME
+    )
+
+    restored = PlayerReport.from_dict(report.to_dict())
+
+    assert restored.tournament_status is None
+    assert "tournament_status" not in report.to_dict()
+
+
+def test_featured_player_report_round_trip_includes_tournament_status() -> None:
+    status = TournamentRunStatus(state=TournamentState.CHAMPION, tournament="Cincinnati", round_reached="W")
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        rank=14,
+        tournament_status=status,
+    )
+
+    restored = FeaturedPlayerReport.from_dict(featured.to_dict())
+
+    assert restored.tournament_status == status
+
+
+def test_match_lookup_result_tournament_status_defaults_to_empty() -> None:
+    result = MatchLookupResult()
+
+    assert result.tournament_status == {}
 
 
 def test_match_lookup_result_defaults_to_empty() -> None:

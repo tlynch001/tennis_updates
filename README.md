@@ -31,6 +31,7 @@ what's next.
 
 - [Data source research & recommendation](#data-source-research--recommendation)
 - [Official ranking vs. daily match activity](#official-ranking-vs-daily-match-activity)
+- [Tournament elimination context](#tournament-elimination-context)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
 - [Featured player (recurring editorial segment)](#featured-player-recurring-editorial-segment)
 - [Slide timing synchronization](#slide-timing-synchronization)
@@ -537,6 +538,131 @@ the official WTA ranking.
   official list and are correctly treated as unchanged - this is by
   design, not a limitation, but worth stating explicitly since "how many
   times has this run today" is not part of the freshness signal at all.
+
+## Tournament elimination context
+
+Beyond "who's ranked where" (official ranking) and "what happened
+yesterday" (daily match activity - see above), the app can also narrate a
+third, related fact: **where a Top N or featured player's *current
+tournament run* stands** - still active, eliminated (by whom, in which
+round), or champion - and, when reliably available, how that compares
+with her result at the same event a year ago. This is purely additive
+narration context; it never touches rankings, movement, or match results.
+
+Enabled by default via the `tournament_status:` block in `config.yaml`:
+
+```yaml
+tournament_status:
+  enabled: true
+  previous_year_lookback_enabled: true
+  points_table_path: data/wta_points_table.yaml
+```
+
+### Where this data comes from
+
+Only a match provider with genuine tournament-*draw* visibility can
+determine this - today that's `wta_official`'s day-first tournament-level
+feed (`wta_daily/plugins/matches/wta_official.py`), whether used directly
+or as a `best_of` source (`wta_daily/plugins/matches/best_of.py` merges it
+in exactly like a match result: first source to report a status for a
+player wins). Every other provider (`sample`, `live_tennis_api`,
+`api_tennis`) simply never populates it, which every consumer treats
+identically to `TournamentState.UNKNOWN` - never as an error, and leaving
+`tournament_status.enabled: true` has zero effect unless `wta_official` is
+in play.
+
+The detection logic itself
+(`wta_daily/plugins/matches/tournament_status.py`) is a small, pure
+function: given one tournament's *complete* fixture list (every round),
+it determines a player's status by finding her latest finished singles
+fixture in the main draw. An unplayed fixture means she's still `active`;
+no fixture at all means she `did_not_participate`; her latest finished
+fixture decides the rest - a loss is `eliminated` (at that round), a won
+final is `champion`, and a won *non-final* is still `active` (she may
+simply have advanced to a round whose fixture isn't in the feed yet -
+this never guesses a terminal state from an apparently-incomplete draw).
+
+The exact same function answers "what did she do at this same tournament
+**last year**" by being called again against the previous year's edition
+of the same `tournament_group_id` (one extra, already-cached-per-run API
+call) - see "API-call impact" below.
+
+### Ranking points and the previous-year comparison
+
+Ranking points for a given tournament category/round are looked up from
+`data/wta_points_table.yaml` (`wta_daily/points_table.py`) - **deterministic
+application data, never computed or estimated by an LLM or narration
+code**. The file is a plain, maintainer-editable YAML table (WTA's own
+published points schedule); update it directly if the WTA revises point
+values, and see its header comment for how draw-size lookups fall back to
+the nearest configured size. WTA Finals (round-robin scoring) and the
+Olympics (no ranking points awarded) are intentionally absent, so a lookup
+for either safely returns "unknown" rather than a guessed number.
+
+`TournamentRunStatus.points_delta` (`wta_daily/models.py`) is **not** "the
+number of ranking points she just gained" - it's `points_earned_this_year
+- points_being_defended_from_last_year`, i.e. the *net swing* once last
+year's result eventually rolls off the rolling 52-week ranking window.
+Narration is written (and the `openai` generator's system prompt
+instructs the LLM) to phrase this only as a future/eventual effect, never
+as an immediate ranking change - consistent with the "official ranking
+vs. daily match activity" rule above.
+
+### Narration behavior
+
+`wta_daily/scripts_gen/tournament_status_narration.py` builds one sentence
+from a `TournamentRunStatus`, shared identically by the Top N narration
+(`template_generator.py`) and the featured-player segment
+(`featured_player.py`) - there is no separate, duplicated, or
+Emma-specific version of this logic anywhere.
+
+- **Detailed the first time a result is reported, brief afterward.**
+  `TournamentRunStatus.is_new_development` (resolved by
+  `wta_daily/persistence/tournament_status_store.py` against
+  `data/tournament-status-history.json`, keyed by player + tournament +
+  season + round reached) is `True` the first day a given result appears
+  and `False` on every subsequent day it's still current - e.g. "Player X
+  is out of the tournament, eliminated by Y in the Round of 16, a result
+  worth 120 ranking points" the first day, just "Player X remains out of
+  the draw here, having fallen in the Round of 16" afterward.
+- **Never fabricates.** A missing eliminator name, missing points-table
+  entry, or missing/unreliable previous-year data each independently
+  degrades that one clause to nothing rather than guessing - the
+  hierarchy is: full detail -> historical comparison omitted -> points
+  omitted -> only the bare elimination/round fact remains. `active`,
+  `did_not_participate`, and `unknown` states add nothing to the script at
+  all (there is no "she did not play" filler where the real story is that
+  she was already eliminated).
+- **Round names are spoken naturally**, not raw codes -
+  `wta_daily/rounds.py` normalizes the WTA backend's draw-size-relative
+  numeric round IDs (`"1"`/`"2"`/`"3"`/`"4"`, `"Q"`/`"S"`/`"F"`) into a
+  stable `R128`/.../`F`/`W` vocabulary and then into a spoken label -
+  Grand Slams use broadcast-style ordinals ("the fourth round"), every
+  other category uses "Round of N" phrasing, and the late rounds
+  ("quarterfinals"/"semifinals"/"final"/"title") are identical everywhere.
+
+### Failure behavior
+
+Exactly like the featured-player segment, this can never fail the Top N
+pipeline: a previous-year lookup failure (network error, tournament
+didn't exist that year, unexpected API shape) is logged and simply
+degrades that one clause to nothing; a missing/corrupt points table logs
+a warning once at startup and disables `points_earned`/
+`previous_year_points` for the run without affecting anything else; a
+corrupted `tournament-status-history.json` is treated as "no history yet"
+rather than raising.
+
+### API-call impact
+
+Zero extra calls for the "current status" detection itself - it reads the
+same tournament-level fixture list (`get_tournament_matches`, per-run
+cached) already fetched for the day-first match lookup. The previous-year
+comparison adds exactly one additional call **per player who is actually
+`eliminated` or `champion` this specific run** (not per tracked player) -
+normally zero to a handful on an ordinary day. Set
+`tournament_status.previous_year_lookback_enabled: false` to keep the
+elimination/round/points context while skipping that extra call entirely,
+or `tournament_status.enabled: false` to disable the whole feature.
 
 ## Understanding & optimizing API usage
 
@@ -1526,6 +1652,8 @@ wta-daily/
         rankings-history.json   # append-only daily snapshots, for movement comparison
         players.json             # small player_id -> {name, country_code} cache
         youtube-uploads.json     # only if youtube.enabled was ever true - duplicate-upload protection
+        tournament-status-history.json  # only if tournament_status.enabled - detailed-once/brief-afterward tracking
+        wta_points_table.yaml    # maintainer-editable ranking-points-by-round table (tracked in git, not generated)
         sample/                   # offline fixtures used by tests/demos
         cache/                    # scratch space for provider-level caching
     output/
@@ -1559,7 +1687,7 @@ CLI (wta_daily/cli.py)
   -> DailyPipeline.run()                wta_daily/pipeline.py
        1. RankingsProvider.get_top_n()          <- plugin: rankings_registry
        2. compute_movement() vs snapshot store  wta_daily/movement.py (UNKNOWN if no prior snapshot exists at all)
-       3. MatchProvider.get_matches_for_date()   <- plugin: matches_registry  (day-first batch call; a player absent from the result is played: false, never an older match)
+       3. MatchProvider.get_matches_for_date()   <- plugin: matches_registry  (day-first batch call; a player absent from the result is played: false, never an older match; also returns tournament_status - see "Tournament elimination context")
        4. RankingsSnapshotStore.save_snapshot() wta_daily/persistence/snapshot_store.py
        5. DailyOutputStore.write_report()       wta_daily/persistence/report_store.py
        6. ScriptGenerator.generate()            <- plugin: script_registry

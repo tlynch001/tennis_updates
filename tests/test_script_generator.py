@@ -3,7 +3,15 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from wta_daily.config import ScriptConfig
-from wta_daily.models import DailyReport, FeaturedPlayerReport, MatchResult, Movement, PlayerReport
+from wta_daily.models import (
+    DailyReport,
+    FeaturedPlayerReport,
+    MatchResult,
+    Movement,
+    PlayerReport,
+    TournamentRunStatus,
+    TournamentState,
+)
 from wta_daily.scripts_gen import phrases
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
 
@@ -476,3 +484,69 @@ def test_featured_player_with_unavailable_rank_produces_no_segment() -> None:
     script = TemplateScriptGenerator().generate(report)
 
     assert "Emma Navarro" not in script
+
+
+# --- Tournament-elimination narration context --------------------------
+
+
+def test_eliminated_player_gets_elimination_context_in_her_paragraph() -> None:
+    report = _sample_report([Movement.SAME])
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Iga Swiatek",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "Iga Swiatek" in script
+    assert "Round of 16" in script
+
+
+def test_champion_player_gets_title_context_in_her_paragraph() -> None:
+    report = _sample_report([Movement.SAME])
+    report.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.CHAMPION,
+        tournament="Cincinnati",
+        round_reached="W",
+        round_label="the title",
+        points_earned=1000,
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "champion" in script.lower() or "title" in script.lower()
+
+
+def test_active_tournament_status_adds_nothing_to_the_script() -> None:
+    with_status = _sample_report([Movement.SAME])
+    with_status.players[0].tournament_status = TournamentRunStatus(
+        state=TournamentState.ACTIVE, tournament="Cincinnati"
+    )
+    without_status = _sample_report([Movement.SAME])
+
+    script_with = TemplateScriptGenerator().generate(with_status)
+    script_without = TemplateScriptGenerator().generate(without_status)
+
+    assert script_with == script_without
+
+
+def test_no_tournament_status_produces_the_same_script_as_before_this_feature() -> None:
+    """Regression guard: a report where the match provider has no
+    tournament-draw visibility at all (tournament_status left as the
+    dataclass default, None) must never mention elimination/championship
+    language it has no facts for."""
+
+    report = _sample_report([Movement.UP, Movement.DOWN, Movement.SAME])
+    for player in report.players:
+        assert player.tournament_status is None  # the default
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "eliminated by" not in script
+    assert "champion" not in script.lower()

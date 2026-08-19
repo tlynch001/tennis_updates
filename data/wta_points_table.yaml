@@ -1,0 +1,90 @@
+# Official WTA singles ranking points, by tournament category and round
+# reached - the deterministic data source for
+# wta_daily/points_table.py. Never edited by narration logic, an LLM, or
+# any generated code; a maintainer updates this file directly if the WTA
+# revises its points schedule.
+#
+# Source: WTA's own published points table (wtatennis.com/rankings-explained)
+# and the ITF's WTA Rankings rules document, cross-checked against each
+# other. Round codes match wta_daily/rounds.py's ROUND_ORDER
+# (R128/R64/R32/R16/QF/SF/F/W) - "F" is reaching the final (runner-up
+# points), "W" is winning it.
+#
+# `draw_sizes` keys are singles main-draw size (see the WTA tournament
+# catalogue's `singlesDrawSize` field). Not every WTA 1000/500 event uses
+# an identical draw across tournaments or seasons (see
+# wta_daily/points_table.py's lookup logic for how an exact size match
+# isn't required - the nearest configured size for that category is used).
+#
+# WTA Finals (round-robin group stage + knockout SF/F, with points that
+# depend on round-robin win count, not just "how far did she advance") and
+# the Olympics (no WTA ranking points are awarded at all - this is
+# intentional, not an oversight) are both deliberately omitted, so a
+# lookup for either safely returns "unknown" rather than a guessed number.
+categories:
+  GRAND SLAM:
+    draw_sizes:
+      128:
+        W: 2000
+        F: 1300
+        SF: 780
+        QF: 430
+        R16: 240
+        R32: 130
+        R64: 70
+        R128: 10
+  WTA 1000:
+    draw_sizes:
+      96:
+        W: 1000
+        F: 650
+        SF: 390
+        QF: 215
+        R16: 120
+        R32: 65
+        R64: 35
+        R128: 10
+      56:
+        W: 1000
+        F: 650
+        SF: 390
+        QF: 215
+        R16: 120
+        R32: 65
+        R64: 10
+  WTA 500:
+    draw_sizes:
+      56:
+        W: 500
+        F: 325
+        SF: 195
+        QF: 108
+        R16: 60
+        R32: 32
+        R64: 1
+      32:
+        W: 500
+        F: 325
+        SF: 195
+        QF: 108
+        R16: 60
+        R32: 1
+  WTA 250:
+    draw_sizes:
+      32:
+        W: 250
+        F: 163
+        SF: 98
+        QF: 54
+        R16: 30
+        R32: 1
+
+# When a lookup doesn't specify a draw size (or the exact size isn't
+# configured above), this is the size used for that category - the most
+# common/largest variant, matching wta_daily/rounds.py's own default
+# assumption for round normalization.
+default_draw_size:
+  GRAND SLAM: 128
+  WTA 1000: 96
+  WTA 500: 56
+  WTA 250: 32

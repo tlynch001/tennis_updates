@@ -87,6 +87,7 @@ tournament feed either way.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -94,10 +95,18 @@ from typing import Any
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import DataProviderError, PlayerDataError
-from wta_daily.models import MatchLookupResult, MatchResult, PlayerRanking
+from wta_daily.models import (
+    MatchLookupResult,
+    MatchResult,
+    PlayerRanking,
+    TournamentRunStatus,
+    TournamentState,
+)
 from wta_daily.plugins.base import MatchProvider
+from wta_daily.plugins.matches.tournament_status import determine_tournament_run_status
 from wta_daily.plugins.registry import matches_registry
 from wta_daily.plugins.wta_api_client import DEFAULT_BASE_URL, WtaOfficialApiClient
+from wta_daily.points_table import DEFAULT_POINTS_TABLE_PATH, PointsTable, load_points_table
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +164,22 @@ _RELEVANT_TOUR_LEVELS = {
     "WTA FINALS",
     "OLYMPICS",
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class _ActiveTournament:
+    """One tournament catalogue entry whose date range covers a given
+    target date - see :meth:`WtaOfficialMatchProvider._find_active_tournaments`.
+    ``level``/``draw_size`` are only used for the tournament-status/
+    points-table lookups; the day-first match lookup itself only ever
+    needed ``group_id``/``year``/``name``.
+    """
+
+    group_id: Any
+    year: Any
+    name: str
+    level: str
+    draw_size: int | None
 
 
 def _fallback_round_label(fixture: dict[str, Any]) -> str:
@@ -218,6 +243,9 @@ class WtaOfficialMatchProvider(MatchProvider):
         lookback_matches: int = 25,
         catalogue_scan_pages: int = 25,
         network: NetworkConfig | None = None,
+        tournament_status_enabled: bool = True,
+        tournament_status_previous_year_lookback_enabled: bool = True,
+        tournament_status_points_table_path: str = str(DEFAULT_POINTS_TABLE_PATH),
         **_ignored: object,
     ) -> None:
         self._client = WtaOfficialApiClient(base_url=base_url, network=network)
@@ -233,6 +261,26 @@ class WtaOfficialMatchProvider(MatchProvider):
         # tournament, so this avoids re-fetching that tournament's full
         # match list once per player.
         self._tournament_matches_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+        # See wta_daily.config.TournamentStatusConfig - wired in from there
+        # by wta_daily/pipeline.py's provider construction, but exposed as
+        # plain constructor kwargs (like every other option here) so a
+        # config.yaml `match_provider.options` block can also set them
+        # directly if this provider is used standalone rather than
+        # through `best_of`.
+        self._tournament_status_enabled = tournament_status_enabled
+        self._previous_year_lookback_enabled = tournament_status_previous_year_lookback_enabled
+        self._points_table: PointsTable | None = None
+        if tournament_status_enabled:
+            try:
+                self._points_table = load_points_table(tournament_status_points_table_path)
+            except Exception as exc:  # noqa: BLE001 - points context is optional, never fatal
+                logger.warning(
+                    "Could not load the ranking-points table from %s (%s); tournament-status "
+                    "narration will omit points_earned/previous_year_points for this run.",
+                    tournament_status_points_table_path,
+                    exc,
+                )
 
     def get_latest_match(self, player: PlayerRanking) -> MatchResult | None:
         try:
@@ -289,15 +337,23 @@ class WtaOfficialMatchProvider(MatchProvider):
 
         player_ids = {p.player_id for p in players}
         results: dict[str, MatchResult] = {}
+        tournament_status: dict[str, TournamentRunStatus] = {}
+        # (group_id, year, draw_size) per player whose status was resolved
+        # this run - needed later for the previous-year lookup, which
+        # can't be derived from TournamentRunStatus alone (it deliberately
+        # doesn't carry a raw `year`/`draw_size`, since those are lookup
+        # plumbing, not narration-facing facts).
+        status_context: dict[str, tuple[Any, Any, int | None]] = {}
         any_tournament_fetch_failed = False
-        for group_id, year, tournament_name in active:
+
+        for tournament in active:
             try:
-                fixtures = self._get_tournament_matches(group_id, year)
+                fixtures = self._get_tournament_matches(tournament.group_id, tournament.year)
             except Exception as exc:  # noqa: BLE001 - one tournament's data failing shouldn't sink the others
                 logger.warning(
                     "Could not fetch matches for tournament %s/%s while checking %s: %s",
-                    group_id,
-                    year,
+                    tournament.group_id,
+                    tournament.year,
                     target_date,
                     exc,
                 )
@@ -316,9 +372,41 @@ class WtaOfficialMatchProvider(MatchProvider):
                 player_a, player_b = str(fixture.get("PlayerIDA", "")), str(fixture.get("PlayerIDB", ""))
                 for player_id, slot in ((player_a, "A"), (player_b, "B")):
                     if player_id in player_ids and player_id not in results:
-                        result = self._build_match_result_from_fixture(fixture, slot, tournament_name)
+                        result = self._build_match_result_from_fixture(fixture, slot, tournament.name)
                         if result is not None:
                             results[player_id] = result
+
+            if self._tournament_status_enabled:
+                for player_id in player_ids:
+                    if player_id in tournament_status:
+                        continue  # already resolved from another active tournament
+                    status = determine_tournament_run_status(
+                        fixtures,
+                        player_id,
+                        tournament_name=tournament.name,
+                        tournament_group_id=tournament.group_id,
+                        category=tournament.level,
+                        draw_size=tournament.draw_size,
+                    )
+                    if status.state != TournamentState.DID_NOT_PARTICIPATE:
+                        tournament_status[player_id] = status
+                        status_context[player_id] = (
+                            tournament.group_id,
+                            tournament.year,
+                            tournament.draw_size,
+                        )
+
+        if self._tournament_status_enabled:
+            for player_id in player_ids:
+                tournament_status.setdefault(
+                    player_id, TournamentRunStatus(state=TournamentState.DID_NOT_PARTICIPATE)
+                )
+            for player_id, status in list(tournament_status.items()):
+                if status.state in (TournamentState.ELIMINATED, TournamentState.CHAMPION):
+                    group_id, year, draw_size = status_context[player_id]
+                    tournament_status[player_id] = self._enrich_tournament_status(
+                        status, player_id, group_id, year, draw_size
+                    )
 
         # Only players still unaccounted for are genuinely ambiguous, and
         # only if some tournament's data was actually unreadable - if every
@@ -329,10 +417,102 @@ class WtaOfficialMatchProvider(MatchProvider):
             if any_tournament_fetch_failed
             else frozenset()
         )
-        return MatchLookupResult(matches=results, unresolved_player_ids=unresolved)
+        return MatchLookupResult(
+            matches=results, unresolved_player_ids=unresolved, tournament_status=tournament_status
+        )
 
-    def _find_active_tournaments(self, target_date: date) -> list[tuple[Any, Any, str]]:
-        """(groupId, year, tournamentName) triples whose date range covers ``target_date``.
+    def _enrich_tournament_status(
+        self,
+        status: TournamentRunStatus,
+        player_id: str,
+        group_id: Any,
+        year: Any,
+        draw_size: int | None,
+    ) -> TournamentRunStatus:
+        """Add ranking points (and, when possible/enabled, a previous-year
+        comparison) to an ELIMINATED/CHAMPION status - never called for
+        ACTIVE/DID_NOT_PARTICIPATE, which have no round reached to price.
+
+        Every enrichment step degrades independently and silently: a
+        missing points-table entry simply leaves ``points_earned`` (or
+        ``previous_year_points``/``points_delta``) unset rather than
+        raising, and a previous-year lookup failure (network error,
+        tournament didn't exist that year, API shape change) is logged
+        and likewise just omitted - see the README's "Tournament
+        elimination context" section for the full graceful-degradation
+        hierarchy this supports.
+        """
+
+        points_earned = (
+            self._points_table.lookup(status.category, status.round_reached, draw_size=draw_size)
+            if self._points_table
+            else None
+        )
+        enriched = dataclasses.replace(status, points_earned=points_earned)
+
+        if not self._previous_year_lookback_enabled:
+            return enriched
+
+        previous_year = int(year) - 1
+        try:
+            previous_fixtures = self._get_tournament_matches(group_id, previous_year)
+        except Exception as exc:  # noqa: BLE001 - the historical callback is optional, never fatal
+            logger.info(
+                "Could not look up %s's previous-year (%s) result at %s: %s",
+                player_id,
+                previous_year,
+                status.tournament,
+                exc,
+            )
+            return enriched
+
+        # The previous year's edition can (rarely) have had a different
+        # draw size than this year's - RoundID normalization is
+        # draw-size-relative, so this year's draw_size must never be
+        # reused to interpret last year's RoundIDs/points. Falls back to
+        # None (the same safe "unknown draw size" default used elsewhere)
+        # if that edition's own catalogue entry can't be located, rather
+        # than guessing with the wrong year's size.
+        previous_edition = self._find_tournament_catalogue_entry(group_id, previous_year)
+        previous_draw_size = previous_edition.draw_size if previous_edition else None
+
+        previous_status = determine_tournament_run_status(
+            previous_fixtures,
+            player_id,
+            tournament_name=status.tournament or "",
+            tournament_group_id=group_id,
+            category=status.category,
+            draw_size=previous_draw_size,
+        )
+        if previous_status.state not in (TournamentState.ELIMINATED, TournamentState.CHAMPION):
+            # DID_NOT_PARTICIPATE (never played it last year), or ACTIVE
+            # (shouldn't happen for a past year, but never guess if seen) -
+            # omit the callback rather than invent one. See the module
+            # docstring's "never invent a previous-year result" rule.
+            return enriched
+
+        previous_points = (
+            self._points_table.lookup(
+                previous_status.category, previous_status.round_reached, draw_size=previous_draw_size
+            )
+            if self._points_table
+            else None
+        )
+        delta = (
+            enriched.points_earned - previous_points
+            if enriched.points_earned is not None and previous_points is not None
+            else None
+        )
+        return dataclasses.replace(
+            enriched,
+            previous_year_round=previous_status.round_reached,
+            previous_year_round_label=previous_status.round_label,
+            previous_year_points=previous_points,
+            points_delta=delta,
+        )
+
+    def _find_active_tournaments(self, target_date: date) -> list[_ActiveTournament]:
+        """Tournaments whose date range covers ``target_date``.
 
         There's no working date filter on the catalogue endpoint (confirmed
         by testing), so this scans the last ``catalogue_scan_pages`` pages -
@@ -340,7 +520,11 @@ class WtaOfficialMatchProvider(MatchProvider):
         current season sits near the end. See ``__init__`` for the tradeoff.
         The tournament *name* is carried from this catalogue entry because
         (perhaps surprisingly) the tournament-matches endpoint's individual
-        fixture records don't include it themselves.
+        fixture records don't include it themselves. ``level`` (category,
+        e.g. "WTA 1000") and ``draw_size`` are carried the same way, purely
+        for the tournament-status/points-table lookups below - they're
+        already present on this same catalogue entry, so capturing them
+        costs nothing extra.
         """
 
         first_page = self._client.list_tournaments_page(page=0, page_size=100)
@@ -348,7 +532,7 @@ class WtaOfficialMatchProvider(MatchProvider):
         last_page = max(0, (total_entries - 1) // 100) if total_entries else 0
         start_page = max(0, last_page - self._catalogue_scan_pages + 1)
 
-        active: list[tuple[Any, Any, str]] = []
+        active: list[_ActiveTournament] = []
         for page in range(start_page, last_page + 1):
             data = self._client.list_tournaments_page(page=page, page_size=100)
             for entry in data.get("content", []):
@@ -364,8 +548,72 @@ class WtaOfficialMatchProvider(MatchProvider):
                     group = entry.get("tournamentGroup") or {}
                     group_id, year = group.get("id"), entry.get("year")
                     if group_id is not None and year is not None:
-                        active.append((group_id, year, str(group.get("name", "Unknown Tournament"))))
+                        draw_size = entry.get("singlesDrawSize")
+                        active.append(
+                            _ActiveTournament(
+                                group_id=group_id,
+                                year=year,
+                                name=str(group.get("name", "Unknown Tournament")),
+                                level=level,
+                                draw_size=int(draw_size) if draw_size else None,
+                            )
+                        )
         return active
+
+    def _find_tournament_catalogue_entry(
+        self, group_id: Any, year: Any
+    ) -> _ActiveTournament | None:
+        """Locate one specific tournament edition's own catalogue entry -
+        used only to get *that edition's own* ``level``/``draw_size`` for
+        the previous-year comparison (see ``_enrich_tournament_status``).
+
+        This matters because :func:`wta_daily.rounds.normalize_wta_round_id`
+        is draw-size-relative: a tournament's draw size can (rarely) differ
+        between editions, so interpreting a previous year's ``RoundID``
+        with *this* year's draw size would be wrong. Draw size changing
+        year to year is uncommon enough not to warrant a bigger redesign -
+        this is a small, targeted lookup, not a general "look up any
+        tournament edition" feature.
+
+        Scans backward from the end of the catalogue exactly like
+        :meth:`_find_active_tournaments`, matched by ``(group_id, year)``
+        instead of a date range, bounded to twice the normal scan window
+        (the catalogue is roughly chronological, so one prior year's
+        edition of the same tournament is only a small, bounded number of
+        pages further back than "this season" - never the whole
+        ~19,000-entry catalogue). Pages already fetched this run by
+        ``_find_active_tournaments`` are served from
+        ``WtaOfficialApiClient``'s own per-page cache, so this typically
+        costs few or zero *additional* HTTP requests. Returns ``None``
+        (never a guess) if the edition isn't found within that window -
+        callers fall back to ``draw_size=None`` (the same safe default
+        already used whenever a draw size is simply unknown).
+        """
+
+        first_page = self._client.list_tournaments_page(page=0, page_size=100)
+        total_entries = int(first_page.get("pageInfo", {}).get("numEntries", 0) or 0)
+        last_page = max(0, (total_entries - 1) // 100) if total_entries else 0
+        scan_pages = self._catalogue_scan_pages * 2
+        start_page = max(0, last_page - scan_pages + 1)
+
+        target_group_id = str(group_id)
+        target_year = str(year)
+        for page in range(last_page, start_page - 1, -1):
+            data = self._client.list_tournaments_page(page=page, page_size=100)
+            for entry in data.get("content", []):
+                group = entry.get("tournamentGroup") or {}
+                if str(group.get("id")) != target_group_id or str(entry.get("year")) != target_year:
+                    continue
+                level = str(entry.get("level", "")).upper()
+                draw_size = entry.get("singlesDrawSize")
+                return _ActiveTournament(
+                    group_id=group.get("id"),
+                    year=entry.get("year"),
+                    name=str(group.get("name", "Unknown Tournament")),
+                    level=level,
+                    draw_size=int(draw_size) if draw_size else None,
+                )
+        return None
 
     @staticmethod
     def _build_match_result_from_fixture(

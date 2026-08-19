@@ -131,6 +131,41 @@ def test_rankings_config_projected_enabled_raises(tmp_path: Path) -> None:
         load_config(config_path)
 
 
+def test_tournament_status_enabled_by_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("top_n: 10\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.tournament_status.enabled is True
+    assert config.tournament_status.previous_year_lookback_enabled is True
+    assert config.tournament_status.points_table_path == "data/wta_points_table.yaml"
+
+
+def test_tournament_status_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tournament_status:\n  enabled: false\n  previous_year_lookback_enabled: false\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tournament_status.enabled is False
+    assert config.tournament_status.previous_year_lookback_enabled is False
+
+
+def test_tournament_status_custom_points_table_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tournament_status:\n  points_table_path: data/custom_points.yaml\n", encoding="utf-8"
+    )
+
+    config = load_config(config_path)
+
+    assert config.tournament_status.points_table_path == "data/custom_points.yaml"
+
+
 def test_publishing_config_enabled_by_default(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("top_n: 10\n", encoding="utf-8")

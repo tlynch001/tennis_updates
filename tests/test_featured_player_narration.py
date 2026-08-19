@@ -12,7 +12,13 @@ import random
 import re
 from datetime import date
 
-from wta_daily.models import FeaturedPlayerReport, MatchResult, Movement
+from wta_daily.models import (
+    FeaturedPlayerReport,
+    MatchResult,
+    Movement,
+    TournamentRunStatus,
+    TournamentState,
+)
 from wta_daily.scripts_gen import featured_player_phrases as fp
 from wta_daily.scripts_gen.featured_player import build_segment
 
@@ -325,3 +331,68 @@ def test_hearts_joke_appears_sometimes_but_not_every_day() -> None:
     hearts_count = sum(1 for s in segments if s and "unofficially" in s.lower())
 
     assert 0 < hearts_count < len(segments)
+
+
+# --- Tournament-elimination narration context --------------------------
+
+
+def test_eliminated_status_adds_elimination_context_to_the_segment() -> None:
+    featured = _featured(
+        rank=28,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            tournament="Cincinnati",
+            round_reached="R32",
+            round_label="the Round of 32",
+            eliminated_by="Some Rival",
+            points_earned=65,
+            is_new_development=True,
+        ),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("elimination-context"))
+
+    assert segment is not None
+    assert "Some Rival" in segment
+    assert "Round of 32" in segment
+
+
+def test_champion_status_adds_title_context_to_the_segment() -> None:
+    featured = _featured(
+        rank=5,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.CHAMPION,
+            tournament="Cincinnati",
+            round_reached="W",
+            round_label="the title",
+            points_earned=1000,
+            is_new_development=True,
+        ),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("champion-context"))
+
+    assert segment is not None
+    assert "champion" in segment.lower() or "title" in segment.lower()
+
+
+def test_no_tournament_status_produces_no_elimination_language() -> None:
+    featured = _featured(rank=28)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("no-tournament-status"))
+
+    assert segment is not None
+    assert "eliminated" not in segment.lower()
+    assert "champion" not in segment.lower()
+
+
+def test_active_tournament_status_produces_no_elimination_language() -> None:
+    featured = _featured(
+        rank=28,
+        tournament_status=TournamentRunStatus(state=TournamentState.ACTIVE, tournament="Cincinnati"),
+    )
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("active-tournament-status"))
+
+    assert segment is not None
+    assert "eliminated" not in segment.lower()

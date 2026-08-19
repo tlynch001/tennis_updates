@@ -19,6 +19,7 @@ import random
 from wta_daily.models import FeaturedPlayerReport, Movement
 from wta_daily.scripts_gen import featured_player_phrases as fp
 from wta_daily.scripts_gen.phrase_utils import format_score_for_narration
+from wta_daily.scripts_gen.tournament_status_narration import build_tournament_status_sentence
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,16 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     match_sentence = _match_sentence(featured, top_n, rng, used_labels)
     if match_sentence:
         parts.append(_finish(match_sentence))
+
+    # Elimination/title context (see wta_daily.models.TournamentRunStatus)
+    # uses exactly the same builder as the Top N narration - never a
+    # duplicated or Emma-specific version of this logic - so it reads
+    # like a factual aside within her otherwise lighthearted segment.
+    tournament_status_sentence = build_tournament_status_sentence(
+        featured.tournament_status, featured.name, rng
+    )
+    if tournament_status_sentence:
+        parts.append(tournament_status_sentence)
 
     if featured.rank != 1 and rng.random() < _HEARTS_JOKE_PROBABILITY:
         hearts = rng.choice(fp.AMERICA_FAVORITE_HEARTS).format(rank=featured.rank)
