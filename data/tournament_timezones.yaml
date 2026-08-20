@@ -1,0 +1,92 @@
+# Maps a WTA tournament catalogue entry's `country` field (see
+# api.wtatennis.com's tournament catalogue, e.g. "USA, OH", "GBR", "FRA")
+# to an IANA timezone name, used to determine tournament-local time for
+# the "reporting day" cutoff (see wta_daily/reporting_day.py and
+# wta_daily/tournament_timezones.py).
+#
+# Not exhaustive by design - deliberately covers countries (and, for the
+# multi-timezone USA, US states) that have hosted WTA tour-level events
+# in recent seasons. A country/state not listed here safely falls back
+# to treating the match's UTC completion time as if it were local (see
+# reporting_date_for_completion's docstring) rather than guessing a
+# timezone - a maintainer can extend either list below at any time
+# without touching any code.
+#
+# IANA names are used (not fixed UTC offsets) so daylight-saving
+# transitions are handled correctly automatically.
+
+countries:
+  USA: America/New_York  # used only when no recognized state is given - see us_states below
+  GBR: Europe/London
+  FRA: Europe/Paris
+  ESP: Europe/Madrid
+  ITA: Europe/Rome
+  GER: Europe/Berlin
+  SUI: Europe/Zurich
+  AUT: Europe/Vienna
+  BEL: Europe/Brussels
+  NED: Europe/Amsterdam
+  POR: Europe/Lisbon
+  CZE: Europe/Prague
+  POL: Europe/Warsaw
+  ROU: Europe/Bucharest
+  BUL: Europe/Sofia
+  HUN: Europe/Budapest
+  SVK: Europe/Bratislava
+  CRO: Europe/Zagreb
+  SLO: Europe/Ljubljana
+  SRB: Europe/Belgrade
+  UKR: Europe/Kyiv
+  RUS: Europe/Moscow
+  EST: Europe/Tallinn
+  LAT: Europe/Riga
+  LTU: Europe/Vilnius
+  DEN: Europe/Copenhagen
+  SWE: Europe/Stockholm
+  NOR: Europe/Oslo
+  FIN: Europe/Helsinki
+  TUR: Europe/Istanbul
+  MAR: Africa/Casablanca
+  TUN: Africa/Tunis
+  RSA: Africa/Johannesburg
+  QAT: Asia/Qatar
+  UAE: Asia/Dubai
+  KAZ: Asia/Almaty
+  CHN: Asia/Shanghai
+  JPN: Asia/Tokyo
+  KOR: Asia/Seoul
+  HKG: Asia/Hong_Kong
+  SGP: Asia/Singapore
+  MAS: Asia/Kuala_Lumpur
+  THA: Asia/Bangkok
+  IND: Asia/Kolkata
+  AUS: Australia/Melbourne
+  NZL: Pacific/Auckland
+  CAN: America/Toronto
+  MEX: America/Mexico_City
+  BRA: America/Sao_Paulo
+  ARG: America/Buenos_Aires
+  COL: America/Bogota
+
+# For the USA specifically, which spans multiple timezones - keyed by
+# the 2-letter state abbreviation the catalogue's `country` field
+# appends after the comma (e.g. "USA, OH"). Covers each continental US
+# timezone via at least one state that has hosted a recent WTA event; a
+# US state not listed here falls back to the `USA` default above
+# (Eastern) rather than guessing further.
+us_states:
+  OH: America/New_York       # Cincinnati
+  NY: America/New_York       # US Open (Flushing)
+  FL: America/New_York       # Miami
+  SC: America/New_York       # Charleston
+  MA: America/New_York
+  NC: America/New_York
+  GA: America/New_York
+  MI: America/New_York
+  IL: America/Chicago        # Chicago
+  TX: America/Chicago
+  AZ: America/Phoenix        # no DST observed
+  CO: America/Denver
+  NV: America/Los_Angeles    # Las Vegas
+  CA: America/Los_Angeles    # Indian Wells
+  WA: America/Los_Angeles

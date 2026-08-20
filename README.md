@@ -30,6 +30,7 @@ what's next.
 ## Table of contents
 
 - [Data source research & recommendation](#data-source-research--recommendation)
+- [Reporting day: late-night finishes](#reporting-day-late-night-finishes-production-incident-august-2026)
 - [Official ranking vs. daily match activity](#official-ranking-vs-daily-match-activity)
 - [Tournament elimination context](#tournament-elimination-context)
 - [Understanding & optimizing API usage](#understanding--optimizing-api-usage)
@@ -331,12 +332,88 @@ Opponent, score, date, and win/loss are unaffected.
 matches, but the *same field* on not-yet-played fixtures in the same
 response can be in tournament **local** time with an explicit offset (e.g.
 `-04:00` for Cincinnati) - a genuine inconsistency in this API, and a
-plausible explanation for `api_tennis`'s date drift above. `_parse_timestamp`
-(`wta_daily/plugins/matches/wta_official.py`) always normalizes to UTC
-before taking the calendar date, and "yesterday" is defined project-wide as
-**UTC calendar yesterday relative to when the job runs** - deterministic
-and reproducible regardless of which tournament's timezone a match was
-actually played in.
+plausible explanation for `api_tennis`'s date drift above.
+`_parse_utc_timestamp` (`wta_daily/plugins/matches/wta_official.py`) always
+normalizes a finished match's timestamp to a UTC instant first. What that
+instant is then attributed to for recap purposes is the "reporting day"
+concept described next - not simply its own raw UTC calendar date, which
+turned out to have its own bug (see below).
+
+### Reporting day: late-night finishes (production incident, August 2026)
+
+**The bug**: the automated pipeline ran at 8:00 AM EDT on Thursday, August
+20, 2026. Aryna Sabalenka had played Sara Bejlek at Cincinnati the previous
+evening; Bejlek won 7-6(9-7), 6-4, but the match didn't finish until 12:15
+AM EDT Thursday morning (04:15 UTC, still Thursday's own UTC calendar day).
+The Thursday-morning report incorrectly said Sabalenka "did not play
+yesterday" - because the day-first lookup compares each match's raw UTC
+completion date against `match_target_date` (`report_date` minus
+`match_target_date_offset_days`, i.e. "yesterday" from the run's point of
+view), and this match's UTC date (Thursday) simply didn't equal that
+target (Wednesday), even though, from a broadcast/recap point of view, it
+was unambiguously part of Wednesday night's schedule.
+
+**The fix**: a match's completion timestamp is no longer bucketed by its
+own raw calendar date. Instead, `wta_daily/reporting_day.py`'s
+`reporting_date_for_completion()` implements a small, general "reporting
+day" rule - the same concept a broadcaster uses for a "late night" show
+that runs past midnight and still counts as part of the previous night's
+schedule: a match completing before an early-morning cutoff hour (default
+**6 AM**, tournament-*local* time when it's resolvable, UTC otherwise) is
+attributed to the **previous** calendar day; anything at or after the
+cutoff keeps its own day, unchanged. This is a pure, deterministic
+function of the completion instant (and timezone) alone - the exact same
+instant always produces the exact same reporting date, which is what
+guarantees a match can never end up eligible for two different daily
+reports (see "No duplicates" below).
+
+**Preferring tournament-local time**: the tournament-matches feed always
+normalizes a *finished* match's timestamp to UTC (confirmed empirically -
+there's no per-match local-time field to read for a completed fixture), so
+tournament-local time has to be resolved a different way:
+`wta_daily/tournament_timezones.py` maps a tournament catalogue entry's own
+`country` field (e.g. `"USA, OH"`, `"GBR"`, `"AUS"` - already fetched as
+part of the existing day-first catalogue scan, at zero extra API cost) to
+an IANA timezone via a small, maintainer-editable data file
+(`data/tournament_timezones.yaml`, covering countries/US-states that have
+hosted recent WTA tour-level events - not a Cincinnati-specific special
+case, and not exhaustive by design). A real IANA timezone (via Python's
+`zoneinfo`) is used rather than a fixed UTC offset so daylight-saving
+transitions are handled correctly automatically. An unrecognized
+country/state falls back to treating the match's own UTC completion hour
+as if it were local - still a reasonable approximation (and, for the
+specific Cincinnati/Eastern regression case, happens to resolve correctly
+either way, since 4:15 AM is before the cutoff in UTC terms too), never a
+reason to exclude a match outright.
+
+**No duplicates**: because `reporting_date_for_completion()` is a pure,
+deterministic function of the match's own completion instant (and its
+tournament's fixed timezone) - never of *when a query happens to be made*
+- a given match always resolves to exactly one reporting day, forever. The
+12:15 AM finish above resolves to Wednesday, August 19 on *every* run that
+ever asks about it, so it's picked up by the Thursday-morning report
+(`target_date = Wednesday`) and never picked up again by the
+Friday-morning report (`target_date = Thursday`) - no separate
+"already-reported" bookkeeping is needed, unlike e.g. the tournament-status
+first-report/brief-report tracking above; the bucketing itself already
+prevents it.
+
+**Configuring the cutoff**: `reporting_day_cutoff_hour` (default `6`) and
+`tournament_timezones_path` (default `data/tournament_timezones.yaml`) are
+plain `wta_official` constructor options, settable like any other
+match-provider option - either directly under `match_provider.options`, or
+per-source under a `best_of` `sources` entry (see `config.example.yaml`).
+Loading the timezone data never fails match detection outright: any load
+error is logged and every match simply falls back to the UTC-only
+approximation for that run.
+
+**Scope**: this fix applies to `WtaOfficialMatchProvider.get_matches_for_date`
+(the primary day-first path every daily run uses) and, using the UTC-only
+fallback (no extra catalogue lookup, so no extra API calls), to
+`get_latest_match`'s date resolution too. It does not change how many API
+calls are made - the tournament catalogue's `country` field was already
+being fetched as part of the existing day-first scan; this only reads one
+additional field from a response already in hand.
 
 ## Official ranking vs. daily match activity
 
@@ -1686,6 +1763,7 @@ wta-daily/
         youtube-uploads.json     # only if youtube.enabled was ever true - duplicate-upload protection
         tournament-status-history.json  # only if tournament_status.enabled - detailed-once/brief-afterward tracking
         wta_points_table.yaml    # maintainer-editable ranking-points-by-round table (tracked in git, not generated)
+        tournament_timezones.yaml  # maintainer-editable country/US-state -> IANA timezone table (tracked in git, not generated)
         sample/                   # offline fixtures used by tests/demos
         cache/                    # scratch space for provider-level caching
     output/
