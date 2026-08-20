@@ -11,12 +11,24 @@ from wta_daily.config import ScriptConfig
 from wta_daily.models import (
     DailyReport,
     FeaturedPlayerReport,
+    MatchResult,
     Movement,
     PlayerReport,
     TournamentRunStatus,
     TournamentState,
 )
 from wta_daily.scripts_gen.openai_generator import _build_user_prompt, _tournament_status_line
+
+
+def _loss(*, opponent: str = "Some Rival") -> MatchResult:
+    return MatchResult(
+        opponent=opponent,
+        tournament="Cincinnati",
+        round="Round of 16",
+        score="6-4,6-3",
+        won=False,
+        match_date=date(2026, 8, 19),
+    )
 
 
 def _player(**overrides: object) -> PlayerReport:
@@ -34,11 +46,11 @@ def _player(**overrides: object) -> PlayerReport:
 
 
 def test_tournament_status_line_is_none_when_status_is_none() -> None:
-    assert _tournament_status_line(None) is None
+    assert _tournament_status_line(None, None) is None
 
 
 def test_tournament_status_line_for_active_states_no_context_to_add() -> None:
-    line = _tournament_status_line(TournamentRunStatus(state=TournamentState.ACTIVE))
+    line = _tournament_status_line(TournamentRunStatus(state=TournamentState.ACTIVE), None)
     assert line is not None
     assert "no elimination/title context" in line
 
@@ -55,7 +67,7 @@ def test_tournament_status_line_for_elimination_includes_facts() -> None:
         is_new_development=True,
     )
 
-    line = _tournament_status_line(status)
+    line = _tournament_status_line(status, None)
 
     assert line is not None
     assert "detailed" in line
@@ -73,10 +85,26 @@ def test_tournament_status_line_marks_brief_for_already_reported_result() -> Non
         is_new_development=False,
     )
 
-    line = _tournament_status_line(status)
+    line = _tournament_status_line(status, None)
 
     assert line is not None
     assert "brief" in line
+
+
+def test_tournament_status_line_flags_a_result_from_the_match_being_narrated() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Some Rival",
+        is_new_development=True,
+    )
+
+    line = _tournament_status_line(status, _loss())
+
+    assert line is not None
+    assert "just happened" in line
+    assert "detailed" not in line.split(";")[0]  # the first segment names the flag, not "detailed"
 
 
 def test_user_prompt_includes_tournament_status_line_for_a_player() -> None:

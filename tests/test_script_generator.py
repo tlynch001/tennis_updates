@@ -490,7 +490,12 @@ def test_featured_player_with_unavailable_rank_produces_no_segment() -> None:
 
 
 def test_eliminated_player_gets_elimination_context_in_her_paragraph() -> None:
+    """No match reported for the target date (a 'previous reporting day'
+    elimination, first noticed today) - the declarative, detailed pool
+    is expected, including the eliminator's name."""
+
     report = _sample_report([Movement.SAME])
+    report.players[0].match = None
     report.players[0].tournament_status = TournamentRunStatus(
         state=TournamentState.ELIMINATED,
         tournament="Cincinnati",
@@ -648,3 +653,62 @@ def test_active_status_does_not_suppress_generic_no_match_filler() -> None:
             found = True
             break
     assert found
+
+
+# --- New elimination (this match) vs. prior-day elimination ---------------
+
+
+def test_a_player_eliminated_by_todays_match_gets_causal_immediate_language() -> None:
+    """Regression: a Top N player eliminated by the match just narrated
+    must never get 'still over'/'remains out'/'eliminated back in'
+    language - see wta_daily.scripts_gen.tournament_status_narration."""
+
+    report = _sample_report([Movement.SAME])
+    player = report.players[0]
+    player.match = MatchResult(
+        opponent="Marta Kostyuk",
+        tournament="Cincinnati",
+        round="Round of 16",
+        score="6-4,6-3",
+        won=False,
+        match_date=date(2026, 8, 19),
+    )
+    player.tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+    lowered = script.lower()
+
+    for forbidden in ("still over", "remains out", "eliminated back in"):
+        assert forbidden not in lowered
+    assert "Round of 16" in script
+
+
+def test_a_player_eliminated_on_an_earlier_day_can_use_prior_status_language() -> None:
+    """No match reported for the target date (the elimination happened
+    on an earlier reporting day) - the declarative 'was eliminated
+    by...' framing is appropriate here."""
+
+    report = _sample_report([Movement.SAME])
+    player = report.players[0]
+    player.match = None
+    player.tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "Marta Kostyuk" in script

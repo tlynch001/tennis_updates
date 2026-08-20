@@ -27,7 +27,35 @@ Two wording rules baked into every pool here:
 
 from __future__ import annotations
 
-#: First-time-reported elimination, with a named eliminator.
+#: The match just narrated in the same paragraph/segment (the win/loss
+#: sentence immediately before this one) is *itself* the match that
+#: eliminated her - see
+#: :func:`wta_daily.scripts_gen.tournament_status_narration.is_result_of_reported_match`.
+#: Deliberately does NOT repeat the eliminator's name or the score - the
+#: match sentence already said who beat her and how; this only adds the
+#: new, causal fact that the loss just narrated is the one that ends her
+#: tournament. ``{tournament}`` is the (titleized) tournament name -
+#: used when it's reliably known.
+ELIMINATED_JUST_NOW_WITH_TOURNAMENT: list[str] = [
+    "that ends her run in {tournament} in {round}",
+    "with that loss, her {tournament} run ends in {round}",
+    "her run in {tournament} ends there, in {round}",
+    "that's the end of the road for her in {tournament}, in {round}",
+]
+
+#: Same as above, for when the tournament name isn't reliably known.
+ELIMINATED_JUST_NOW_NO_TOURNAMENT: list[str] = [
+    "that brings her tournament to an end in {round}",
+    "that's the end of her run, in {round}",
+    "with that, her tournament run is over, in {round}",
+]
+
+#: First-time-reported elimination that did *not* come from the match
+#: just narrated in this same script (e.g. the elimination happened on
+#: an earlier day than the one this run's match-result sentence covers -
+#: still worth full detail the first time it's noticed, but "just now"
+#: causal language would be inaccurate here since no match was just
+#: described).
 ELIMINATED_OPENING_WITH_ELIMINATOR: list[str] = [
     "her tournament run is over after {eliminated_by} knocked her out in {round}",
     "{first_name}'s run at this event ended in {round}, beaten by {eliminated_by}",
@@ -51,7 +79,24 @@ ELIMINATED_BRIEF: list[str] = [
     "{first_name} is done at this event, her exit having come in {round}",
 ]
 
-#: First-time-reported title win.
+#: The win just narrated in the same paragraph/segment is itself the
+#: match that won her the title - deliberately doesn't repeat the score
+#: (already said in the match sentence).
+CHAMPION_JUST_NOW_WITH_TOURNAMENT: list[str] = [
+    "that's the title at {tournament}",
+    "with that win, she claims the title at {tournament}",
+    "that completes the run - {first_name} is the {tournament} champion",
+]
+
+CHAMPION_JUST_NOW_NO_TOURNAMENT: list[str] = [
+    "that's the title",
+    "with that win, she claims the title",
+    "that completes the run - a champion crowned",
+]
+
+#: First-time-reported title win that did *not* come from the match just
+#: narrated in this same script (see ELIMINATED_OPENING_* above for the
+#: same reasoning).
 CHAMPION_OPENING: list[str] = [
     "{first_name} has won the title, going the distance through the draw",
     "{first_name} is the champion here, capping the week off with the trophy",

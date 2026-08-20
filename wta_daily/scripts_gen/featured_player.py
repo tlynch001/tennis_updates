@@ -131,7 +131,7 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     # duplicated or Emma-specific version of this logic - so it reads
     # like a factual aside within her otherwise lighthearted segment.
     tournament_status_sentence = build_tournament_status_sentence(
-        featured.tournament_status, featured.name, rng
+        featured.tournament_status, featured.name, rng, match=featured.match
     )
     if tournament_status_sentence:
         parts.append(tournament_status_sentence)

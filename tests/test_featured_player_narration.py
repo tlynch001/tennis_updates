@@ -558,3 +558,63 @@ def test_first_name_appears_after_the_eliminator_is_named() -> None:
         assert segment is not None
         pegula_index = segment.index("Pegula")
         assert "Emma" in segment[pegula_index:]
+
+
+# --- Proximity language must match the actual ranking distance ---------
+
+
+def test_far_from_top_n_never_claims_close_proximity() -> None:
+    """A player around #28 (well outside a Top 10 show) must never be
+    described as 'just outside,' 'on the doorstep,' 'knocking on the
+    door,' or 'lurking' near the Top N - those phrases falsely imply
+    she's close."""
+
+    featured = _featured(rank=28)
+
+    forbidden_phrases = [
+        "just outside",
+        "on the doorstep",
+        "knocking on the door",
+        "lurking",
+        "next on the itinerary",
+        "comes calling",
+        "keep an eye over its shoulder",
+    ]
+    for i in range(60):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"proximity-{i}"))
+        assert segment is not None
+        lowered = segment.lower()
+        for phrase in forbidden_phrases:
+            assert phrase not in lowered
+
+
+def test_far_from_top_n_still_produces_a_playful_but_plausible_segment() -> None:
+    featured = _featured(rank=28)
+
+    segment = build_segment(featured, top_n=TOP_N, rng=_rng("plausible-28"))
+
+    assert segment is not None
+    assert "28" in segment
+
+
+def test_a_player_much_further_away_also_never_claims_close_proximity() -> None:
+    """The same pool is used for any rank outside the Top N, so it must
+    remain safe even for a player nowhere near breaking in (e.g. #150)."""
+
+    featured = _featured(rank=150)
+
+    forbidden_phrases = ["just outside", "on the doorstep", "knocking on the door", "lurking"]
+    for i in range(60):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"far-away-{i}"))
+        assert segment is not None
+        lowered = segment.lower()
+        for phrase in forbidden_phrases:
+            assert phrase not in lowered
+
+
+def test_pursuit_language_still_varies_across_many_days() -> None:
+    featured = _featured(rank=28)
+
+    segments = {build_segment(featured, top_n=TOP_N, rng=_rng(f"variety-{i}")) for i in range(40)}
+
+    assert len(segments) > 1
