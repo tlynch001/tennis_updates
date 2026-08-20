@@ -21,6 +21,12 @@ from wta_daily.plugins.matches.wta_official import WtaOfficialMatchProvider
 PLAYER = PlayerRanking(rank=1, player_id="P1", name="Test Player", country_code="USA", points=8000)
 
 
+def _sabalenka_ranking() -> PlayerRanking:
+    return PlayerRanking(
+        rank=1, player_id="sabalenka-id", name="Aryna Sabalenka", country_code="BLR", points=9000
+    )
+
+
 def _player_match(
     *,
     round_name: str = "R16",
@@ -334,6 +340,7 @@ def _tournament_catalogue_entry(
     start_date: str = "2026-08-13",
     end_date: str = "2026-08-23",
     draw_size: int | None = None,
+    country: str | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "tournamentGroup": {"id": group_id, "name": name, "level": level},
@@ -344,6 +351,8 @@ def _tournament_catalogue_entry(
     }
     if draw_size is not None:
         entry["singlesDrawSize"] = draw_size
+    if country is not None:
+        entry["country"] = country
     return entry
 
 
@@ -505,20 +514,194 @@ def test_get_matches_for_date_normalizes_local_offset_timestamps_to_utc(
 ) -> None:
     """A finished match reported in a local offset (not observed in practice,
     but the not-yet-played entries in the same feed do this - see module
-    docstring) must still bucket to the correct UTC calendar day."""
+    docstring) must still normalize to UTC correctly - checked here with a
+    daytime timestamp so the separate reporting-day cutoff (see
+    test_get_matches_for_date_applies_the_reporting_day_cutoff_for_a_late_night_finish)
+    doesn't also shift the bucketing and confound this specific check."""
 
-    # 23:30 in UTC-04:00 is 03:30 the next day in UTC.
-    fixture = _tournament_level_fixture(match_timestamp="2026-08-15T23:30:00-04:00")
+    # 14:30 in UTC-04:00 is 18:30 the same day in UTC - well after the
+    # reporting-day cutoff, so this isolates offset normalization alone.
+    fixture = _tournament_level_fixture(match_timestamp="2026-08-15T14:30:00-04:00")
     provider = _provider_for_day_first(
         monkeypatch,
         catalogue_entries=[_tournament_catalogue_entry()],
         fixtures_by_tournament={(1017, 2026): [fixture]},
     )
 
-    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 16))
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
     assert "P1" in result.matches
-    assert result.matches["P1"].match_date == date(2026, 8, 16)
+    assert result.matches["P1"].match_date == date(2026, 8, 15)
+
+
+# ---------------------------------------------------------------------------
+# Reporting-day cutoff (production regression, August 2026): Sara Bejlek
+# def. Aryna Sabalenka 7-6(9-7), 6-4 at Cincinnati, completed 12:15 AM EDT
+# Thursday, August 20, 2026 (04:15 UTC the same calendar day). The 8 AM
+# Thursday run incorrectly reported Sabalenka as "did not play yesterday"
+# because the match's UTC-normalized completion date (Aug 20) didn't
+# equal the query's target date (Aug 19, i.e. "yesterday" as of the
+# Thursday run) - even though this was unambiguously part of Wednesday
+# night's schedule.
+# ---------------------------------------------------------------------------
+
+
+def _bejlek_def_sabalenka_fixture(*, match_timestamp: str) -> dict[str, Any]:
+    return _tournament_level_fixture(
+        player_id_a="sabalenka-id",
+        player_id_b="bejlek-id",
+        first_a="Aryna",
+        last_a="Sabalenka",
+        first_b="Sara",
+        last_b="Bejlek",
+        match_state="F",
+        match_timestamp=match_timestamp,
+        winner="3",  # slot B (Bejlek) won
+        round_id="4",
+        score_string="7-6(9-7),6-4",
+    )
+
+
+def test_a_late_night_finish_is_included_in_the_following_mornings_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact regression case: a match completing at 12:15 AM Eastern
+    Thursday (04:15 UTC) must be included when the Thursday-morning run
+    asks 'what happened Wednesday' (target_date = Wednesday, August 19)."""
+
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T04:15:00+00:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="USA, OH")],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 19))
+
+    assert "sabalenka-id" in result.matches
+    match = result.matches["sabalenka-id"]
+    assert match.opponent == "Sara Bejlek"
+    assert match.won is False
+    assert match.score == "7-6(9-7),6-4"
+    assert match.match_date == date(2026, 8, 19)
+
+
+def test_the_same_late_night_match_is_not_reported_again_the_following_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Friday-morning run (target_date = Thursday, August 20) must
+    NOT also report this same Wednesday-night match - it belongs to
+    exactly one reporting day, never two."""
+
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T04:15:00+00:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="USA, OH")],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 20))
+
+    assert "sabalenka-id" not in result.matches
+
+
+def test_a_match_completed_normally_during_the_daytime_is_included_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ordinary daytime match must retain its expected reporting
+    date - the cutoff must not shift matches that were never near a
+    midnight boundary in the first place."""
+
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-19T20:23:32+00:00")  # 4:23 PM Eastern
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="USA, OH")],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 19))
+
+    assert "sabalenka-id" in result.matches
+    assert result.matches["sabalenka-id"].match_date == date(2026, 8, 19)
+
+
+def test_a_true_next_day_daytime_match_is_reported_on_its_own_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine Thursday daytime match (not a late-night carryover from
+    Wednesday) must be reported in Friday's 'what happened Thursday'
+    recap, not folded into Wednesday's."""
+
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T15:00:00+00:00")  # 11 AM Eastern
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="USA, OH")],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 20))
+
+    assert "sabalenka-id" in result.matches
+    assert result.matches["sabalenka-id"].match_date == date(2026, 8, 20)
+
+
+def test_reporting_day_cutoff_falls_back_gracefully_for_an_unrecognized_country(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No recognized tournament country/timezone must never exclude a
+    match outright - it falls back to treating the UTC completion time
+    as if it were local (still correctly resolving this specific case,
+    since 04:15 UTC is before the UTC-based fallback cutoff too)."""
+
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T04:15:00+00:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="ATLANTIS")],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 19))
+
+    assert "sabalenka-id" in result.matches
+
+
+def test_reporting_day_cutoff_falls_back_gracefully_when_no_country_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T04:15:00+00:00")
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],  # no country at all
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 19))
+
+    assert "sabalenka-id" in result.matches
+
+
+def test_reporting_day_cutoff_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A custom cutoff hour is respected - a 2 AM Eastern finish is
+    reclassified to the previous day under the default 6 AM cutoff, but
+    not under a stricter 1 AM cutoff."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(country="USA, OH")],
+        fixtures_by_tournament={
+            (1017, 2026): [
+                # 2:00 AM Eastern Thursday = 06:00 UTC Thursday.
+                _bejlek_def_sabalenka_fixture(match_timestamp="2026-08-20T06:00:00+00:00")
+            ]
+        },
+    )
+    provider._reporting_cutoff_hour = 1
+
+    result = provider.get_matches_for_date([PLAYER, _sabalenka_ranking()], date(2026, 8, 20))
+
+    # With a 1 AM cutoff, 2 AM is no longer "late night" - it keeps its
+    # own day (Thursday), rather than being folded into Wednesday.
+    assert "sabalenka-id" in result.matches
 
 
 def test_get_matches_for_date_skips_irrelevant_tour_levels(monkeypatch: pytest.MonkeyPatch) -> None:

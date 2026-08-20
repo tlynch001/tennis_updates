@@ -92,6 +92,7 @@ import logging
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from wta_daily.config import NetworkConfig
 from wta_daily.exceptions import DataProviderError, PlayerDataError
@@ -107,6 +108,12 @@ from wta_daily.plugins.matches.tournament_status import determine_tournament_run
 from wta_daily.plugins.registry import matches_registry
 from wta_daily.plugins.wta_api_client import DEFAULT_BASE_URL, WtaOfficialApiClient
 from wta_daily.points_table import DEFAULT_POINTS_TABLE_PATH, PointsTable, load_points_table
+from wta_daily.reporting_day import DEFAULT_CUTOFF_HOUR, reporting_date_for_completion
+from wta_daily.tournament_timezones import (
+    DEFAULT_TOURNAMENT_TIMEZONES_PATH,
+    TournamentTimezones,
+    load_tournament_timezones,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,8 +178,11 @@ class _ActiveTournament:
     """One tournament catalogue entry whose date range covers a given
     target date - see :meth:`WtaOfficialMatchProvider._find_active_tournaments`.
     ``level``/``draw_size`` are only used for the tournament-status/
-    points-table lookups; the day-first match lookup itself only ever
-    needed ``group_id``/``year``/``name``.
+    points-table lookups; ``country`` is only used to resolve the
+    tournament's local timezone for the "reporting day" cutoff (see
+    :mod:`wta_daily.reporting_day`/:mod:`wta_daily.tournament_timezones`).
+    The day-first match lookup itself only ever strictly needed
+    ``group_id``/``year``/``name``.
     """
 
     group_id: Any
@@ -180,6 +190,7 @@ class _ActiveTournament:
     name: str
     level: str
     draw_size: int | None
+    country: str | None = None
 
 
 def _fallback_round_label(fixture: dict[str, Any]) -> str:
@@ -196,15 +207,20 @@ def _fallback_round_label(fixture: dict[str, Any]) -> str:
     return f"{level} Round {round_id}".strip()
 
 
-def _parse_timestamp(raw: Any) -> date | None:
-    """Parse a ``MatchTimeStamp``-style value into a UTC calendar date.
+def _parse_utc_timestamp(raw: Any) -> datetime | None:
+    """Parse a ``MatchTimeStamp``-style value into a timezone-aware UTC
+    ``datetime`` - deliberately the full instant, not yet truncated to a
+    calendar date (see :func:`wta_daily.reporting_day.reporting_date_for_completion`
+    for why the exact instant matters, not just its own UTC calendar date).
 
     Confirmed empirically: finished matches report this in UTC
     (``+00:00``/``Z``), but not-yet-played matches in the *same* feed can
     report it in tournament LOCAL time with an explicit offset instead
-    (e.g. Cincinnati's ``-04:00``). Always normalizing to UTC before taking
-    the date avoids a day-bucketing bug from that inconsistency - see the
-    module docstring's "day-first fix" section.
+    (e.g. Cincinnati's ``-04:00``). Always normalizing to UTC here avoids
+    a day-bucketing bug from that inconsistency - see the module
+    docstring's "day-first fix" section. A naive (no offset at all)
+    timestamp is assumed to already represent UTC, consistent with this
+    API's own convention for finished matches.
     """
 
     if not raw:
@@ -215,8 +231,8 @@ def _parse_timestamp(raw: Any) -> date | None:
         logger.info("Unparsable timestamp %r", raw)
         return None
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(UTC)
-    return parsed.date()
+        return parsed.astimezone(UTC)
+    return parsed.replace(tzinfo=UTC)
 
 
 def _has_real_score(match: dict[str, Any]) -> bool:
@@ -246,6 +262,8 @@ class WtaOfficialMatchProvider(MatchProvider):
         tournament_status_enabled: bool = True,
         tournament_status_previous_year_lookback_enabled: bool = True,
         tournament_status_points_table_path: str = str(DEFAULT_POINTS_TABLE_PATH),
+        reporting_day_cutoff_hour: int = DEFAULT_CUTOFF_HOUR,
+        tournament_timezones_path: str = str(DEFAULT_TOURNAMENT_TIMEZONES_PATH),
         **_ignored: object,
     ) -> None:
         self._client = WtaOfficialApiClient(base_url=base_url, network=network)
@@ -261,6 +279,30 @@ class WtaOfficialMatchProvider(MatchProvider):
         # tournament, so this avoids re-fetching that tournament's full
         # match list once per player.
         self._tournament_matches_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+        # "Reporting day" cutoff (see wta_daily/reporting_day.py) - a
+        # match completing before this LOCAL hour is still attributed to
+        # the *previous* calendar day, exactly like a late-night
+        # broadcast is counted as part of the previous night's schedule.
+        # This is what fixes the August 2026 production incident (a
+        # match finishing shortly after midnight Eastern was excluded
+        # from the following morning's report because its UTC-normalized
+        # completion timestamp had already rolled onto the next calendar
+        # day). Loading the timezone data never fails match detection
+        # outright - on any load error, every match simply falls back to
+        # the UTC-only approximation (tz=None) for the rest of this run,
+        # never a hard failure of this core feature.
+        self._reporting_cutoff_hour = reporting_day_cutoff_hour
+        self._timezones: TournamentTimezones | None = None
+        try:
+            self._timezones = load_tournament_timezones(tournament_timezones_path)
+        except Exception as exc:  # noqa: BLE001 - never let this break match detection
+            logger.warning(
+                "Could not load tournament timezone data from %s (%s); the reporting-day cutoff "
+                "will use each match's UTC completion time as an approximation for this run.",
+                tournament_timezones_path,
+                exc,
+            )
 
         # See wta_daily.config.TournamentStatusConfig - wired in from there
         # by wta_daily/pipeline.py's provider construction, but exposed as
@@ -360,19 +402,26 @@ class WtaOfficialMatchProvider(MatchProvider):
                 any_tournament_fetch_failed = True
                 continue
 
+            # Resolved once per tournament (not per fixture) - every
+            # fixture in the same tournament shares the same location, so
+            # there's nothing to gain from re-resolving it repeatedly.
+            # `None` (no recognized country/state) is a safe, documented
+            # fallback - see TournamentTimezones.resolve's docstring.
+            tz = self._timezones.resolve(tournament.country) if self._timezones else None
+
             for fixture in fixtures:
                 if fixture.get("DrawMatchType") != _SINGLES:
                     continue
                 if fixture.get("MatchState") != _FINISHED_MATCH_STATE:
                     continue
-                fixture_date = _parse_timestamp(fixture.get("MatchTimeStamp"))
+                fixture_date = self._reporting_date(fixture.get("MatchTimeStamp"), tz)
                 if fixture_date != target_date:
                     continue
 
                 player_a, player_b = str(fixture.get("PlayerIDA", "")), str(fixture.get("PlayerIDB", ""))
                 for player_id, slot in ((player_a, "A"), (player_b, "B")):
                     if player_id in player_ids and player_id not in results:
-                        result = self._build_match_result_from_fixture(fixture, slot, tournament.name)
+                        result = self._build_match_result_from_fixture(fixture, slot, tournament.name, tz)
                         if result is not None:
                             results[player_id] = result
 
@@ -521,10 +570,12 @@ class WtaOfficialMatchProvider(MatchProvider):
         The tournament *name* is carried from this catalogue entry because
         (perhaps surprisingly) the tournament-matches endpoint's individual
         fixture records don't include it themselves. ``level`` (category,
-        e.g. "WTA 1000") and ``draw_size`` are carried the same way, purely
-        for the tournament-status/points-table lookups below - they're
-        already present on this same catalogue entry, so capturing them
-        costs nothing extra.
+        e.g. "WTA 1000"), ``draw_size``, and ``country`` are carried the
+        same way, purely for the tournament-status/points-table lookups
+        and the reporting-day timezone resolution (see
+        :mod:`wta_daily.tournament_timezones`) below - they're already
+        present on this same catalogue entry, so capturing them costs
+        nothing extra.
         """
 
         first_page = self._client.list_tournaments_page(page=0, page_size=100)
@@ -556,6 +607,7 @@ class WtaOfficialMatchProvider(MatchProvider):
                                 name=str(group.get("name", "Unknown Tournament")),
                                 level=level,
                                 draw_size=int(draw_size) if draw_size else None,
+                                country=entry.get("country") or None,
                             )
                         )
         return active
@@ -615,9 +667,30 @@ class WtaOfficialMatchProvider(MatchProvider):
                 )
         return None
 
-    @staticmethod
+    def _reporting_date(self, raw_timestamp: Any, tz: ZoneInfo | None) -> date | None:
+        """The "reporting day" (see :mod:`wta_daily.reporting_day`) a
+        fixture's ``MatchTimeStamp`` should be attributed to - ``None``
+        if the timestamp itself couldn't be parsed at all.
+
+        This is the single choke point every date used for day-first
+        match matching/attribution goes through, which is what
+        guarantees :meth:`get_matches_for_date`'s equality comparison
+        and :meth:`_build_match_result_from_fixture`'s ``match_date``
+        are always computed identically for the same fixture - and,
+        since it's a pure function of the timestamp/timezone alone,
+        always produces the same result no matter which day's run asks
+        (see the module docstring's production-incident section for why
+        that determinism is what prevents a match from ever being
+        reported on two different days).
+        """
+
+        parsed = _parse_utc_timestamp(raw_timestamp)
+        if parsed is None:
+            return None
+        return reporting_date_for_completion(parsed, tz=tz, cutoff_hour=self._reporting_cutoff_hour)
+
     def _build_match_result_from_fixture(
-        fixture: dict[str, Any], our_slot: str, tournament_name: str
+        self, fixture: dict[str, Any], our_slot: str, tournament_name: str, tz: ZoneInfo | None
     ) -> MatchResult | None:
         winner_slot = {"2": "A", "3": "B"}.get(str(fixture.get("Winner")))
         if winner_slot is None:
@@ -635,7 +708,7 @@ class WtaOfficialMatchProvider(MatchProvider):
             round=_fallback_round_label(fixture),
             score=_parse_score(str(fixture.get("ScoreString", ""))),
             won=(winner_slot == our_slot),
-            match_date=_parse_timestamp(fixture.get("MatchTimeStamp")),
+            match_date=self._reporting_date(fixture.get("MatchTimeStamp"), tz),
             surface=None,
         )
 
@@ -726,7 +799,16 @@ class WtaOfficialMatchProvider(MatchProvider):
                     fixture.get("MatchState"),
                 )
                 return None
-            return _parse_timestamp(fixture.get("MatchTimeStamp"))
+            # No tournament-country context is available here without an
+            # extra catalogue lookup (this method only has group_id/year,
+            # not the catalogue entry itself) - falls back to the
+            # UTC-only reporting-day approximation rather than spending
+            # an additional API call just for this legacy per-player
+            # fallback path (see the module docstring's "API-call
+            # impact" guarantees; the primary day-first path above does
+            # have tournament-local timezone resolution, at zero extra
+            # cost, since it already scans the catalogue).
+            return self._reporting_date(fixture.get("MatchTimeStamp"), tz=None)
 
         logger.info(
             "Could not find a matching fixture in tournament %s/%s for %s vs opponent %s; "

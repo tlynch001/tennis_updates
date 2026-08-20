@@ -66,6 +66,17 @@ match_provider:
     - provider: wta_official
       # lookback_matches: 25
       # catalogue_scan_pages: 25   # how many ~100-entry pages of the tournament catalogue to scan for "active this week"
+      #
+      # "Reporting day" cutoff (see README.md's "Reporting day: late-night
+      # finishes" section) - a match completing before this LOCAL hour is
+      # still attributed to the *previous* calendar day, exactly like a
+      # late-night broadcast counts as part of the previous night's
+      # schedule. Tournament-local time is resolved from the tournament's
+      # country/US-state (data/tournament_timezones.yaml) when recognized;
+      # otherwise this falls back to the match's UTC completion hour as a
+      # reasonable approximation. Rarely needs changing.
+      # reporting_day_cutoff_hour: 6
+      # tournament_timezones_path: data/tournament_timezones.yaml
     - provider: live_tennis_api
       # lookback_matches: 20
       # api_key_env: LIVETENNISAPI_KEY   # resolved from the environment/.env - never put the key here
