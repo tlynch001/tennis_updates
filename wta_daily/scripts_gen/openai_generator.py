@@ -15,10 +15,11 @@ import logging
 import os
 
 from wta_daily.config import ScriptConfig
-from wta_daily.models import DailyReport, TournamentRunStatus, TournamentState
+from wta_daily.models import DailyReport, MatchResult, TournamentRunStatus, TournamentState
 from wta_daily.plugins.base import ScriptGenerator
 from wta_daily.plugins.registry import script_registry
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
+from wta_daily.scripts_gen.tournament_status_narration import is_result_of_reported_match
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,16 @@ _SYSTEM_PROMPT = (
     "phrase for her (e.g. 'America's favorite', 'the reigning champion of this show's "
     "affections') more than once within this segment - pick a different one for each "
     "sentence that needs one. Never make a mathematically specific claim "
-    "like 'just two wins away'. If her rank has her already inside the Top N, retire the "
+    "like 'just two wins away'. Never make a proximity claim that isn't actually true of her "
+    "rank, either - phrases like 'just outside the Top N', 'on the doorstep', 'knocking on the "
+    "door', or 'lurking just outside' imply she's genuinely close (e.g. rank 11-15 for a "
+    "Top 10 show), which is misleading for a player ranked, say, 28th or 100th. For a player "
+    "well outside the Top N, prefer playful language that doesn't claim closeness - e.g. 'the "
+    "climb back toward the Top N continues', 'this program remains considerably more optimistic "
+    "than the rankings', 'naturally, this program has higher expectations', 'still some "
+    "climbing to do before she's back in the Top N' - the joke is that the show is unusually "
+    "fond of her regardless of the numbers, never that she's about to break in when she isn't. "
+    "If her rank has her already inside the Top N, retire the "
     "'trying to break in' framing and instead celebrate that she's arrived; if she's reached "
     "world No. 1, drop the official-vs-unofficial-ranking bit entirely and just recognize the "
     "real result. Only occasionally (not every script) use a '#1 in our hearts' style joke "
@@ -114,6 +124,18 @@ _SYSTEM_PROMPT = (
     "run is already over; the elimination/title context replaces that filler entirely. A "
     "genuine win/loss match result for the target date is never dropped by this rule, only the "
     "generic 'nothing to report either way' filler is. "
+    "If a 'Tournament status' line is marked '(just happened, from the match you're already "
+    "narrating for her)', that means the win/loss you just described for this player IS the "
+    "match that eliminated her or won her the title - in that case use immediate, causal "
+    "language (e.g. 'that ends her run in the Round of 16', 'with that loss, her tournament "
+    "run is over', 'that's the title') and do NOT repeat the opponent's name, the score, or the "
+    "round the way you just did in her match sentence - only add the NEW facts (that this loss "
+    "ends her run, the ranking points, any historical comparison). Never say 'remains "
+    "eliminated', 'is still out', 'was eliminated' (past tense implying an earlier day), or "
+    "similar language for a result that just happened in the match you're narrating right now - "
+    "that phrasing is reserved for the 'detailed'/'brief' cases below, where the elimination/"
+    "title did NOT come from a match you're narrating today (e.g. it happened on an earlier "
+    "reporting day, or no match is being reported for her at all this run). "
     "General naming rule for every player (Top N and featured alike): introduce her by her full "
     "name once (the first time she's mentioned in her own story/segment), then prefer her first "
     "name or a clear pronoun for the rest of that story/segment - do not mechanically repeat the "
@@ -126,7 +148,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _tournament_status_line(status: TournamentRunStatus | None) -> str | None:
+def _tournament_status_line(status: TournamentRunStatus | None, match: MatchResult | None) -> str | None:
     """A single precomputed-facts line for the LLM to phrase (never
     recompute) - ``None`` when there's nothing worth mentioning.
 
@@ -135,6 +157,13 @@ def _tournament_status_line(status: TournamentRunStatus | None) -> str | None:
     so the model doesn't need to guess why it's absent, but the system
     prompt tells it to say nothing narration-wise for those states either
     way.
+
+    ``match`` should be this same player's "Latest match" result (if
+    any) - used only to add an explicit "just happened" flag (see
+    :func:`wta_daily.scripts_gen.tournament_status_narration.is_result_of_reported_match`)
+    telling the model whether this status came from the match it's
+    already narrating for this player, which changes how it should be
+    phrased (see the system prompt).
     """
 
     if status is None:
@@ -142,7 +171,12 @@ def _tournament_status_line(status: TournamentRunStatus | None) -> str | None:
     if status.state not in (TournamentState.ELIMINATED, TournamentState.CHAMPION):
         return f"{status.state.value}, no elimination/title context to add"
 
-    detail = "detailed" if status.is_new_development else "brief"
+    if is_result_of_reported_match(status, match):
+        detail = "just happened, from the match you're already narrating for her"
+    elif status.is_new_development:
+        detail = "detailed"
+    else:
+        detail = "brief"
     parts = [f"{status.state.value} ({detail})"]
     if status.round_label:
         parts.append(f"round reached: {status.round_label}")
@@ -189,7 +223,7 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             f"previous rank: {player.previous_rank}): {player.name}, {player.points} points. "
             f"Latest match: {match_desc}."
         )
-        status_line = _tournament_status_line(player.tournament_status)
+        status_line = _tournament_status_line(player.tournament_status, player.match)
         if status_line:
             line += f" Tournament status: {status_line}."
         lines.append(line)
@@ -218,7 +252,7 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
                 f"{featured.previous_rank}), in Top {len(report.players)}: "
                 f"{featured.rank <= len(report.players)}. Latest match: {match_desc}."
             )
-            status_line = _tournament_status_line(featured.tournament_status)
+            status_line = _tournament_status_line(featured.tournament_status, featured.match)
             if status_line:
                 featured_line += f" Tournament status: {status_line}."
             lines.append(featured_line)

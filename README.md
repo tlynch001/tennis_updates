@@ -702,7 +702,31 @@ Emma-specific version of this logic anywhere.
   tournament run is over after Jessica Pegula knocked her out in the Round
   of 32. That finish earns Emma 65 ranking points, improving on the Round
   of 64 she reached here last year." the first day, just "Emma remains out
-  of the draw here, having fallen in the Round of 32." afterward.
+  of the draw here, having fallen in the Round of 32." afterward. This
+  "detailed"/"brief" pair is only used when *no* match is being narrated
+  for her this run - see the next bullet for the (more common) case where
+  today's own match result is the elimination/title itself.
+- **A newly eliminated/newly crowned player gets immediate, causal
+  language - never "still"/"remains"/"back in" (production incident,
+  August 2026).** `is_result_of_reported_match(status, match)` checks
+  whether the win/loss just narrated in the same paragraph/segment *is*
+  the result behind `status` (a reported loss while eliminated, or a
+  reported win while champion - in single-elimination tennis this is
+  never a guess: any loss ends a run, and only the final's winner is
+  champion). When true, the sentence uses immediate/causal phrasing
+  ("that ends her run in the Round of 16", "with that loss, her Cincinnati
+  run ends there") and deliberately does **not** repeat the eliminator's
+  name or the round the match-result sentence immediately before it
+  already gave - only when `match` is absent (the result is from an
+  earlier reporting day, or there's simply no match narrated for her
+  today) does the older declarative "was eliminated by.../remains out of
+  the draw" phrasing apply, since those facts haven't been stated yet in
+  that case. This is what fixed real production output like "Mirra
+  Andreeva stays at number 6 after she was eliminated by Marta Kostyuk...
+  Mirra's tournament run is still over, eliminated back in the Round of
+  16." (the redundant, wrongly-tensed original) into "...after she was
+  eliminated by Marta Kostyuk... That ends her run in Cincinnati in the
+  Round of 16."
 - **Never fabricates.** A missing eliminator name, missing points-table
   entry, or missing/unreliable previous-year data each independently
   degrades that one clause to nothing rather than guessing - the
@@ -1001,6 +1025,21 @@ if she ever reaches world No. 1 - see
 enforced by tests (never a mathematically specific pursuit claim, never a
 fabricated match result, never "new"/"debut" language on a first-ever run,
 substantial variation across at least a few dozen days).
+
+**Pursuit language must stay semantically plausible, not just playful**
+(production incident, August 2026): `AMERICA_FAVORITE_PURSUIT`
+(`wta_daily/scripts_gen/featured_player_phrases.py`) is the same phrase
+pool for *any* rank outside the Top N - #11 or #150 alike - so it can never
+contain a phrase implying she's genuinely close ("just outside the Top
+N," "on the doorstep," "knocking on the door," "lurking just outside the
+neighborhood") unless that's actually true for every rank the pool could
+ever be used with, which it isn't. A player at #28 being described as
+"still lurking just outside the neighborhood she belongs in" was real,
+incorrect production output - the pool was rewritten to keep the same
+affectionate, "the show is unusually fond of her regardless of the
+numbers" joke without ever claiming a specific closeness that isn't true
+(e.g. "the climb back toward the Top N continues," "this program remains
+considerably more optimistic than the rankings").
 
 Graphics were deliberately left untouched for this feature (the official
 leaderboard stays the official leaderboard) - the priority here was data

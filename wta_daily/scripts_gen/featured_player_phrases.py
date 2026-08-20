@@ -56,20 +56,25 @@ AMERICA_FAVORITE_LABELS: list[str] = [
 ]
 
 #: Used when she's outside the Top N - hints at an "inevitable" return
-#: without ever making a mathematically specific claim (no "just two wins
-#: away" style promises - see wta_daily.scripts_gen.featured_player).
+#: without ever making a mathematically specific *or* proximity claim.
+#: No "just two wins away" style promises, and no phrase here implies
+#: she's close/imminent to the Top N (e.g. "just outside," "on the
+#: doorstep," "lurking," "next on the itinerary") - this same pool is
+#: used for a player at #11 and a player at #150 alike, and only the
+#: former's closeness would actually be true. See
+#: wta_daily.scripts_gen.featured_player for how this is selected.
 AMERICA_FAVORITE_PURSUIT: list[str] = [
     "the climb back toward the Top {n} continues",
     "we're treating that ranking as strictly temporary",
-    "the Top {n} might want to keep an eye over its shoulder",
-    "surely just a matter of time before the Top {n} comes calling",
     "the comeback campaign rolls on",
-    "still lurking just outside the neighborhood she belongs in",
     "we're keeping a seat warm in the Top {n} regardless",
     "another step on the way back to where she belongs",
-    "the Top {n} remains, in our completely biased view, only a matter of time",
     "the case for a return to the Top {n} keeps building",
-    "we remain confident the Top {n} is next on the itinerary",
+    "there's still ground to make up before the Top {n}, but we'll be watching the climb",
+    "still some climbing to do before she's back in the Top {n}",
+    "naturally, this program has higher expectations",
+    "this program remains considerably more optimistic than the rankings",
+    "the rankings will catch up eventually, as far as this program's concerned",
 ]
 
 #: Used the (rarer) day she's actually inside the Top N. Never continues

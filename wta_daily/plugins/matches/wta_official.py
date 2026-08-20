@@ -432,7 +432,12 @@ class WtaOfficialMatchProvider(MatchProvider):
                     status = determine_tournament_run_status(
                         fixtures,
                         player_id,
-                        tournament_name=tournament.name,
+                        # Titleized for the same reason MatchResult.tournament
+                        # is (see _build_match_result_from_fixture) - the raw
+                        # catalogue name is ALL CAPS ("CINCINNATI"), and this
+                        # value is narrated directly (see
+                        # wta_daily.scripts_gen.tournament_status_narration).
+                        tournament_name=_titleize_tournament(tournament.name),
                         tournament_group_id=tournament.group_id,
                         category=tournament.level,
                         draw_size=tournament.draw_size,

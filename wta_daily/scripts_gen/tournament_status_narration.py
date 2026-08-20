@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import random
 
-from wta_daily.models import TournamentRunStatus, TournamentState
+from wta_daily.models import MatchResult, TournamentRunStatus, TournamentState
 from wta_daily.rounds import round_rank
 from wta_daily.scripts_gen import tournament_status_phrases as tsp
 from wta_daily.scripts_gen.name_utils import first_name as _first_name
@@ -47,6 +47,37 @@ from wta_daily.scripts_gen.name_utils import first_name as _first_name
 #: States for which elimination/title context exists at all - see
 #: supersedes_inactivity_narration.
 _TERMINAL_STATES = frozenset({TournamentState.ELIMINATED, TournamentState.CHAMPION})
+
+
+def is_result_of_reported_match(status: TournamentRunStatus | None, match: MatchResult | None) -> bool:
+    """Whether the win/loss just narrated in the same paragraph/segment
+    (``match``) is *itself* the result that produced ``status`` -
+    i.e. a reported loss that eliminated her, or a reported win that
+    crowned her champion.
+
+    This is a simple, safe inference rather than an exact
+    opponent-name/date cross-check: in single-elimination tennis, any
+    loss ends a player's run, and a title is won only by the final's
+    winner - so "a loss was just narrated and she's eliminated" (or "a
+    win was just narrated and she's champion") is definitionally the
+    same event, never a guess. The distinction matters because narration
+    for "this just happened" must use immediate/causal language (see
+    :data:`wta_daily.scripts_gen.tournament_status_phrases.ELIMINATED_JUST_NOW_WITH_TOURNAMENT`)
+    and must not repeat facts (the eliminator's name, the score) the
+    match sentence immediately before it already stated - whereas a
+    *previously* known result (no match narrated today, or a status
+    already reported on an earlier day) uses the declarative "was
+    eliminated by.../remains out of the draw" language that does state
+    those facts, since they haven't been said yet in this run's script.
+    """
+
+    if status is None or match is None:
+        return False
+    if status.state is TournamentState.ELIMINATED:
+        return match.won is False
+    if status.state is TournamentState.CHAMPION:
+        return match.won is True
+    return False
 
 
 def supersedes_inactivity_narration(status: TournamentRunStatus | None) -> bool:
@@ -148,8 +179,31 @@ def _points_and_history_sentence(status: TournamentRunStatus, name: str, rng: ra
     return _finish(base + swing)
 
 
-def _eliminated_sentences(status: TournamentRunStatus, name: str, rng: random.Random) -> list[str]:
+def _eliminated_sentences(
+    status: TournamentRunStatus, name: str, rng: random.Random, *, just_now: bool
+) -> list[str]:
     round_phrase = status.round_label or "the tournament"
+
+    if just_now:
+        # The loss was just narrated in the match sentence immediately
+        # before this one - use immediate/causal language and never
+        # repeat the eliminator's name, which that sentence already
+        # gave. Always gets full detail (points/history): this is
+        # unambiguously the first - and only - time this exact result
+        # will ever be narrated as "just happened".
+        pool = (
+            tsp.ELIMINATED_JUST_NOW_WITH_TOURNAMENT
+            if status.tournament
+            else tsp.ELIMINATED_JUST_NOW_NO_TOURNAMENT
+        )
+        opening = rng.choice(pool).format(
+            first_name=name, round=round_phrase, tournament=status.tournament
+        )
+        sentences = [_finish(opening)]
+        points_history = _points_and_history_sentence(status, name, rng)
+        if points_history:
+            sentences.append(points_history)
+        return sentences
 
     if not status.is_new_development:
         base = rng.choice(tsp.ELIMINATED_BRIEF).format(first_name=name, round=round_phrase)
@@ -169,7 +223,21 @@ def _eliminated_sentences(status: TournamentRunStatus, name: str, rng: random.Ra
     return sentences
 
 
-def _champion_sentences(status: TournamentRunStatus, name: str, rng: random.Random) -> list[str]:
+def _champion_sentences(
+    status: TournamentRunStatus, name: str, rng: random.Random, *, just_now: bool
+) -> list[str]:
+    if just_now:
+        pool = (
+            tsp.CHAMPION_JUST_NOW_WITH_TOURNAMENT
+            if status.tournament
+            else tsp.CHAMPION_JUST_NOW_NO_TOURNAMENT
+        )
+        sentences = [_finish(rng.choice(pool).format(first_name=name, tournament=status.tournament))]
+        points_history = _points_and_history_sentence(status, name, rng)
+        if points_history:
+            sentences.append(points_history)
+        return sentences
+
     if not status.is_new_development:
         return [_finish(rng.choice(tsp.CHAMPION_BRIEF).format(first_name=name))]
 
@@ -181,7 +249,11 @@ def _champion_sentences(status: TournamentRunStatus, name: str, rng: random.Rand
 
 
 def build_tournament_status_sentence(
-    status: TournamentRunStatus | None, full_name: str, rng: random.Random
+    status: TournamentRunStatus | None,
+    full_name: str,
+    rng: random.Random,
+    *,
+    match: MatchResult | None = None,
 ) -> str | None:
     """One or more ready-to-append, fully punctuated sentences for
     ``status`` (joined with spaces into a single string), or ``None``
@@ -199,13 +271,27 @@ def build_tournament_status_sentence(
     (:mod:`wta_daily.scripts_gen.name_utils`) - callers are expected to
     have already introduced the full name earlier in the same
     paragraph/segment, per this module's docstring.
+
+    ``match`` should be the same win/loss result (if any) the caller
+    just narrated in its own match-result sentence immediately before
+    calling this function - passing it is what lets this distinguish "a
+    newly eliminated/newly crowned player, from the very match just
+    described" (immediate/causal language, never repeating facts already
+    stated - see :func:`is_result_of_reported_match`) from "a result
+    already known from an earlier reporting day" (the existing
+    detailed/brief split, which does restate the eliminator/round since
+    they haven't been said yet in this run's script). Omitting ``match``
+    (or passing one that doesn't correspond to this status) simply
+    disables that distinction, falling back to the older behavior - it
+    never raises.
     """
 
     if status is None:
         return None
     name = _first_name(full_name)
+    just_now = is_result_of_reported_match(status, match)
     if status.state is TournamentState.ELIMINATED:
-        return " ".join(_eliminated_sentences(status, name, rng))
+        return " ".join(_eliminated_sentences(status, name, rng, just_now=just_now))
     if status.state is TournamentState.CHAMPION:
-        return " ".join(_champion_sentences(status, name, rng))
+        return " ".join(_champion_sentences(status, name, rng, just_now=just_now))
     return None

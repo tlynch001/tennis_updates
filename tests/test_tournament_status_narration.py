@@ -6,11 +6,34 @@ import random
 
 import pytest
 
-from wta_daily.models import TournamentRunStatus, TournamentState
+from wta_daily.models import MatchResult, TournamentRunStatus, TournamentState
 from wta_daily.scripts_gen.tournament_status_narration import (
     build_tournament_status_sentence,
+    is_result_of_reported_match,
     supersedes_inactivity_narration,
 )
+
+
+def _loss(*, opponent: str = "Some Rival") -> MatchResult:
+    return MatchResult(
+        opponent=opponent,
+        tournament="Cincinnati",
+        round="Round of 16",
+        score="6-4,6-3",
+        won=False,
+        match_date=None,
+    )
+
+
+def _win(*, opponent: str = "Some Rival") -> MatchResult:
+    return MatchResult(
+        opponent=opponent,
+        tournament="Cincinnati",
+        round="Final",
+        score="6-4,6-3",
+        won=True,
+        match_date=None,
+    )
 
 
 def _rng() -> random.Random:
@@ -449,5 +472,170 @@ def test_narration_still_varies_across_seeds_after_the_polish_pass() -> None:
 
     outputs = {
         build_tournament_status_sentence(status, "Emma Navarro", random.Random(seed)) for seed in range(30)
+    }
+    assert len(outputs) > 1
+
+
+# --- New elimination (this match) vs. prior-day elimination ---------------
+
+
+def test_is_result_of_reported_match_true_for_a_loss_that_eliminated_her() -> None:
+    status = TournamentRunStatus(state=TournamentState.ELIMINATED, round_reached="R16")
+
+    assert is_result_of_reported_match(status, _loss()) is True
+
+
+def test_is_result_of_reported_match_true_for_a_win_that_won_the_title() -> None:
+    status = TournamentRunStatus(state=TournamentState.CHAMPION, round_reached="W")
+
+    assert is_result_of_reported_match(status, _win()) is True
+
+
+def test_is_result_of_reported_match_false_when_no_match_is_given() -> None:
+    status = TournamentRunStatus(state=TournamentState.ELIMINATED, round_reached="R16")
+
+    assert is_result_of_reported_match(status, None) is False
+
+
+def test_is_result_of_reported_match_false_when_status_is_none() -> None:
+    assert is_result_of_reported_match(None, _loss()) is False
+
+
+def test_is_result_of_reported_match_false_for_a_win_while_eliminated() -> None:
+    """A won match can't be the one that eliminated her - this only
+    happens if the fixture data is stale/inconsistent, and must never be
+    treated as 'just happened' causally."""
+
+    status = TournamentRunStatus(state=TournamentState.ELIMINATED, round_reached="R16")
+
+    assert is_result_of_reported_match(status, _win()) is False
+
+
+def test_is_result_of_reported_match_false_for_active_or_did_not_participate() -> None:
+    assert is_result_of_reported_match(TournamentRunStatus(state=TournamentState.ACTIVE), _loss()) is False
+    assert (
+        is_result_of_reported_match(TournamentRunStatus(state=TournamentState.DID_NOT_PARTICIPATE), _loss())
+        is False
+    )
+
+
+def test_a_newly_eliminated_player_gets_causal_immediate_language() -> None:
+    """The exact regression: a player eliminated by the match just
+    narrated must get 'that ends her run...' style language, never
+    'still'/'remains'/'back in' language."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    for seed in range(30):
+        sentence = build_tournament_status_sentence(
+            status, "Mirra Andreeva", random.Random(seed), match=_loss(opponent="Marta Kostyuk")
+        )
+        assert sentence is not None
+        lowered = sentence.lower()
+        for forbidden in ("still over", "remains out", "eliminated back in", "was eliminated by"):
+            assert forbidden not in lowered
+        # The match sentence (built by the caller, not this function)
+        # already named the eliminator - this sentence must not repeat it.
+        assert "Marta Kostyuk" not in sentence
+        assert "Round of 16" in sentence
+
+
+def test_a_newly_crowned_champion_gets_causal_immediate_language() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.CHAMPION,
+        tournament="Cincinnati",
+        round_reached="W",
+        round_label="the title",
+        points_earned=1000,
+        is_new_development=True,
+    )
+
+    for seed in range(20):
+        sentence = build_tournament_status_sentence(
+            status, "Test Player", random.Random(seed), match=_win()
+        )
+        assert sentence is not None
+        lowered = sentence.lower()
+        assert "title" in lowered or "champion" in lowered
+        assert "remains" not in lowered
+        assert "still" not in lowered
+
+
+def test_an_earlier_reporting_day_elimination_can_use_prior_status_language() -> None:
+    """No match reported today (the elimination happened on an earlier
+    day) - the existing 'was eliminated by.../remains out of the draw'
+    language is appropriate here, since it hasn't been said in this
+    run's script yet."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        points_earned=120,
+        is_new_development=True,
+    )
+
+    sentence = build_tournament_status_sentence(status, "Mirra Andreeva", random.Random(0), match=None)
+
+    assert sentence is not None
+    assert "Marta Kostyuk" in sentence
+
+
+def test_an_already_reported_elimination_still_gets_brief_language_when_no_match_today() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R16",
+        round_label="the Round of 16",
+        is_new_development=False,
+    )
+
+    sentence = build_tournament_status_sentence(status, "Linda Noskova", random.Random(0), match=None)
+
+    assert sentence is not None
+    assert "remains" in sentence.lower() or "still" in sentence.lower()
+
+
+def test_backward_compatible_when_match_is_omitted() -> None:
+    """Omitting `match` entirely (the pre-existing call signature) must
+    still work exactly as before - it simply disables the 'just
+    happened' distinction rather than raising."""
+
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Some Rival",
+        is_new_development=True,
+    )
+
+    sentence = build_tournament_status_sentence(status, "Test Player", random.Random(0))
+
+    assert sentence is not None
+    assert "Some Rival" in sentence
+
+
+def test_new_elimination_language_still_varies_across_seeds() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        is_new_development=True,
+    )
+
+    outputs = {
+        build_tournament_status_sentence(status, "Mirra Andreeva", random.Random(seed), match=_loss())
+        for seed in range(30)
     }
     assert len(outputs) > 1

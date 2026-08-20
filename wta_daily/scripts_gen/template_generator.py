@@ -180,7 +180,9 @@ class TemplateScriptGenerator(ScriptGenerator):
         if extra:
             sentence += f" {extra}"
 
-        status_sentence = build_tournament_status_sentence(player.tournament_status, player.name, rng)
+        status_sentence = build_tournament_status_sentence(
+            player.tournament_status, player.name, rng, match=player.match
+        )
         if status_sentence:
             sentence += f" {status_sentence}"
 
