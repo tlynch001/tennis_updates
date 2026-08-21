@@ -204,9 +204,8 @@ def _render(
             fill=outcome_color,
             anchor="la",
         )
-        detail_line = (
-            f"{featured.match.score}    |    {featured.match.tournament} \u2014 {featured.match.round}"
-        )
+        round_suffix = f" \u2014 {featured.match.round}" if featured.match.round else ""
+        detail_line = f"{featured.match.score}    |    {featured.match.tournament}{round_suffix}"
         draw.text(
             (margin * 1.6, panel_top + height * 0.20),
             detail_line,

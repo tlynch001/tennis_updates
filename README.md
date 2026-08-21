@@ -30,6 +30,7 @@ what's next.
 ## Table of contents
 
 - [Data source research & recommendation](#data-source-research--recommendation)
+- [Round normalization](#round-normalization-production-incident-august-2026)
 - [Reporting day: late-night finishes](#reporting-day-late-night-finishes-production-incident-august-2026)
 - [Official ranking vs. daily match activity](#official-ranking-vs-daily-match-activity)
 - [Tournament elimination context](#tournament-elimination-context)
@@ -319,14 +320,57 @@ day-first lookup correctly reported `played: false` for all ten, and
 separately, correctly found three players' real wins the very next day,
 matching those same sources exactly (opponent, score, round, and date).
 
-One remaining, explicitly accepted tradeoff: a match found only through the
-day-first tournament scan (i.e. one the per-player endpoint hasn't caught
-up on yet) can't be cross-referenced against that endpoint's nicer
-`R16`/`Quarterfinal`-style round names, since there's nothing to
-cross-reference. Those matches get a plainer `"Main Draw Round 2"`-style
-label instead, built directly from the tournament feed's own fields -
-correct, just less polished until the per-player endpoint does catch up.
-Opponent, score, date, and win/loss are unaffected.
+A match found only through the day-first tournament scan (i.e. one the
+per-player endpoint hasn't caught up on yet) can't be cross-referenced
+against that endpoint's `round_name` field, since there's nothing to
+cross-reference - `_fallback_round_label`
+(`wta_daily/plugins/matches/wta_official.py`) builds a round name directly
+from the tournament feed's own `RoundID`/`DrawLevelType` fields instead.
+See "Round normalization" below for how that's done correctly (it wasn't,
+at first - a real production incident). Opponent, score, date, and
+win/loss are unaffected either way.
+
+### Round normalization (production incident, August 2026)
+
+**The bug**: a generated script once read "Jessica Pegula ... defeated
+Amanda Anisimova ... in the Main Draw Round Q at Cincinnati." -
+`_fallback_round_label` used to build `"{DrawLevelType label} Round
+{RoundID}"` directly from the tournament feed's raw `RoundID`, with **no
+normalization at all**. The WTA backend uses letter codes for the late
+rounds of a main draw (`"Q"` = quarterfinal, `"S"` = semifinal, `"F"` =
+final - see `wta_daily/rounds.py`'s `_LETTER_ROUNDS`), so a quarterfinal
+fixture's raw `RoundID` is literally the single character `"Q"` - which
+this function stringified straight into narration instead of recognizing.
+
+**The fix**: `_fallback_round_label` now routes every raw `RoundID`
+through the exact same `wta_daily.rounds.normalize_wta_round_id` pipeline
+every other round-facing fact in this project already uses (see
+"Tournament elimination context" above), rather than a second,
+inconsistent, unnormalized implementation:
+
+- `DrawLevelType == "M"` (main draw): `RoundID` is normalized
+  (`"Q"`/`"S"`/`"F"` map directly to quarterfinal/semifinal/final; a
+  numeric code is resolved against the tournament's own `singlesDrawSize`,
+  same as everywhere else) and rendered with the same friendly vocabulary
+  (`"Round of 16"`, `"Quarterfinal"`, ...) the per-player-endpoint code
+  path already used, for consistency between the two.
+- `DrawLevelType == "Q"` (a genuinely qualifying-bracket fixture): narrated
+  as `"Qualifying Round N"` (or bare `"Qualifying"`) instead - a
+  qualifying draw's own round numbering is a distinct, small vocabulary
+  from the main draw's, so the *same* raw value is never assumed to mean
+  the same thing in both; a qualifying "Q"/numeric code is never run
+  through the main-draw table, and a main-draw "Q" is never assumed to
+  mean qualifying just because the letter matches.
+- Anything else (an unrecognized `DrawLevelType`, or a `RoundID` that
+  can't be confidently normalized, e.g. inconsistent with the configured
+  draw size): `MatchResult.round` is `None` - **never** a raw/unexplained
+  provider code or a guess. Every narration/graphics consumer of `round`
+  (`template_generator.py`, `featured_player.py`, `openai_generator.py`,
+  the player/featured-player card graphics) already has a round-omitted
+  fallback path for exactly this case, e.g. "Jessica Pegula continues to
+  sit at number 3 after she took care of business against Amanda
+  Anisimova, 6-4, 2-6, 7-6(4), at Cincinnati." rather than exposing
+  `"Main Draw Round Q"` or a literal `"None"`.
 
 **Timezone handling**: `MatchTimeStamp` is UTC (`+00:00`/`Z`) for finished
 matches, but the *same field* on not-yet-played fixtures in the same
@@ -693,7 +737,9 @@ narration (`template_generator.py`) and the featured-player segment
 (`featured_player.py`) - there is no separate, duplicated, or
 Emma-specific version of this logic anywhere.
 
-- **Detailed the first time a result is reported, brief afterward.**
+- **Detailed the first time a result is reported, brief afterward - both
+  always phrased as a completed historical event, never an ongoing state
+  (production incident, August 2026).**
   `TournamentRunStatus.is_new_development` (resolved by
   `wta_daily/persistence/tournament_status_store.py` against
   `data/tournament-status-history.json`, keyed by player + tournament +
@@ -701,11 +747,16 @@ Emma-specific version of this logic anywhere.
   and `False` on every subsequent day it's still current - e.g. "Her
   tournament run is over after Jessica Pegula knocked her out in the Round
   of 32. That finish earns Emma 65 ranking points, improving on the Round
-  of 64 she reached here last year." the first day, just "Emma remains out
-  of the draw here, having fallen in the Round of 32." afterward. This
-  "detailed"/"brief" pair is only used when *no* match is being narrated
-  for her this run - see the next bullet for the (more common) case where
-  today's own match result is the elimination/title itself.
+  of 64 she reached here last year." the first day, just "Her run at this
+  event ended in the Round of 32." afterward. This "detailed"/"brief" pair
+  is only used when *no* match is being narrated for her this run - see
+  the next bullet for the (more common) case where today's own match
+  result is the elimination/title itself. Elimination is a single,
+  completed historical event, not an ongoing process - the brief pool
+  never uses "still"/"remains"/"continues to be" to describe a previously
+  known elimination (real, incorrect production output once read "Linda
+  remains out of the draw here, having fallen in the Round of 16." - now
+  "Linda's run at this event ended in the Round of 16.").
 - **A newly eliminated/newly crowned player gets immediate, causal
   language - never "still"/"remains"/"back in" (production incident,
   August 2026).** `is_result_of_reported_match(status, match)` checks
@@ -719,8 +770,8 @@ Emma-specific version of this logic anywhere.
   name or the round the match-result sentence immediately before it
   already gave - only when `match` is absent (the result is from an
   earlier reporting day, or there's simply no match narrated for her
-  today) does the older declarative "was eliminated by.../remains out of
-  the draw" phrasing apply, since those facts haven't been stated yet in
+  today) does the older declarative "was eliminated by.../her run ended
+  in..." phrasing apply, since those facts haven't been stated yet in
   that case. This is what fixed real production output like "Mirra
   Andreeva stays at number 6 after she was eliminated by Marta Kostyuk...
   Mirra's tournament run is still over, eliminated back in the Round of

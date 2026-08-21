@@ -40,7 +40,13 @@ _SYSTEM_PROMPT = (
     "on that date; do not invent or imply a match happened, and do not describe an older "
     "result instead. Mention whether they won or lost, the opponent, tournament, round, and "
     "score when a match is given; if no match information is available, say so plainly "
-    "rather than guessing. Format scores with a space after each comma (e.g. '6-4, 7-6(2)', "
+    "rather than guessing. The match's round is given as free text (e.g. 'Quarterfinal', "
+    "'Round of 16') when it's reliably known; the round is simply OMITTED from the match "
+    "description entirely (no round shown in parentheses) when it isn't known - in that case, "
+    "narrate the match result without mentioning a round at all (e.g. 'took care of business "
+    "against X, 6-4, 2-6, 7-6(4), at Cincinnati') rather than inventing one, guessing, or "
+    "outputting a raw/unexplained code or placeholder like 'Round Q' or 'None'. "
+    "Format scores with a space after each comma (e.g. '6-4, 7-6(2)', "
     "not '6-4,7-6(2)') for readability. A match result never changes the CURRENT official "
     "ranking shown for that player - never say a match 'moves her to number X' or imply the "
     "official ranking updated because of it; you may occasionally (not for every winning "
@@ -100,8 +106,12 @@ _SYSTEM_PROMPT = (
     "say nothing about tournament elimination/title context for that player at all - do not "
     "say she 'did not play' just because there's no ranking-list news for her either way. If "
     "the line's detail level is 'brief' (a result already reported on an earlier day), keep it "
-    "to one short clause (e.g. 'remains out of the draw, having fallen in the quarterfinals') "
-    "rather than repeating every detail again. If it's 'detailed' (first time this exact result "
+    "to one short clause describing the elimination as a completed, historical fact (e.g. "
+    "'her tournament run ended in the quarterfinals') rather than repeating every detail again. "
+    "Elimination is a single past event, not an ongoing state - never use 'still'/'remains'/"
+    "'continues to be' (or similar present-progressive framing) to describe a PREVIOUSLY known "
+    "elimination; simple past tense ('ended', 'was eliminated') is correct, 'is still over' or "
+    "'remains out of the draw' is not. If it's 'detailed' (first time this exact result "
     "is being reported), you may use the full detail given, split naturally across two or three "
     "broadcast-style sentences rather than crammed into one sentence with dashes - e.g. one "
     "sentence for the elimination/title fact, a separate sentence for the ranking points and "
@@ -191,6 +201,19 @@ def _tournament_status_line(status: TournamentRunStatus | None, match: MatchResu
     return "; ".join(parts)
 
 
+def _match_description(match: MatchResult) -> str:
+    """A one-line, human-readable summary of ``match`` for the user
+    prompt - omits the round entirely (rather than embedding a literal
+    "None") when it's unknown; see
+    :mod:`wta_daily.plugins.matches.wta_official`'s round-normalization
+    docstring for how/why that happens.
+    """
+
+    outcome = "won" if match.won else "lost"
+    round_part = f"{match.round}, " if match.round else ""
+    return f"{outcome} vs {match.opponent} {match.score} ({round_part}{match.tournament})"
+
+
 def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
     target_date = report.match_target_date
     lines = [
@@ -211,11 +234,7 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
     for player in report.players:
         match_desc = "no completed match to report"
         if player.match is not None:
-            outcome = "won" if player.match.won else "lost"
-            match_desc = (
-                f"{outcome} vs {player.match.opponent} {player.match.score} "
-                f"({player.match.round}, {player.match.tournament})"
-            )
+            match_desc = _match_description(player.match)
         elif player.match_error:
             match_desc = f"match data unavailable ({player.match_error})"
         line = (
@@ -239,11 +258,7 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
         else:
             match_desc = "no completed match to report"
             if featured.match is not None:
-                outcome = "won" if featured.match.won else "lost"
-                match_desc = (
-                    f"{outcome} vs {featured.match.opponent} {featured.match.score} "
-                    f"({featured.match.round}, {featured.match.tournament})"
-                )
+                match_desc = _match_description(featured.match)
             elif featured.match_error:
                 match_desc = f"match data unavailable ({featured.match_error})"
             featured_line = (

@@ -73,10 +73,19 @@ ELIMINATED_OPENING_NO_ELIMINATOR: list[str] = [
 #: A second/subsequent day's brief mention of an elimination already
 #: reported in full - see TournamentRunStatus.is_new_development's
 #: docstring for why this stays short rather than repeating every detail.
+#:
+#: Elimination is a single, completed historical event, not an ongoing
+#: state - none of these use "still"/"remains"/"continues to be" (or
+#: similar present-progressive framing) to describe it, only simple past
+#: tense ("ended", "came to an end"). A production incident (August 2026)
+#: produced exactly that wrong framing ("Aryna's tournament run is still
+#: over, eliminated back in the Round of 16.", "Linda remains out of the
+#: draw here, having fallen in the Round of 16.") - this pool was
+#: rewritten to fix it.
 ELIMINATED_BRIEF: list[str] = [
-    "{first_name} remains out of the draw here, having fallen in {round}",
-    "{first_name}'s tournament run is still over, eliminated back in {round}",
-    "{first_name} is done at this event, her exit having come in {round}",
+    "{first_name}'s tournament run ended in {round}",
+    "her run at this event ended in {round}",
+    "{first_name}'s run came to an end in {round}",
 ]
 
 #: The win just narrated in the same paragraph/segment is itself the

@@ -712,3 +712,55 @@ def test_a_player_eliminated_on_an_earlier_day_can_use_prior_status_language() -
     script = TemplateScriptGenerator().generate(report)
 
     assert "Marta Kostyuk" in script
+
+
+def test_a_previously_reported_elimination_uses_completed_historical_wording() -> None:
+    """Regression: 'still over'/'remains out of the draw' must never
+    appear once an elimination has already been reported before -
+    elimination is a completed event, never described with
+    ongoing-state language."""
+
+    report = _sample_report([Movement.SAME])
+    player = report.players[0]
+    player.match = None
+    player.tournament_status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        is_new_development=False,
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+    lowered = script.lower()
+
+    for forbidden in ("still over", "remains out of the draw", "eliminated back in", "continues to be"):
+        assert forbidden not in lowered
+    assert "ended" in lowered or "came to an end" in lowered
+
+
+def test_round_omitted_gracefully_when_it_cannot_be_normalized() -> None:
+    """A match whose round couldn't be confidently normalized (see
+    wta_daily.plugins.matches.wta_official's round-normalization
+    docstring) must never surface a raw/invalid round code or a literal
+    'None' - the sentence stays grammatically correct with the round
+    simply omitted."""
+
+    report = _sample_report([Movement.SAME])
+    player = report.players[0]
+    player.match = MatchResult(
+        opponent="Amanda Anisimova",
+        tournament="Cincinnati",
+        round=None,
+        score="6-4,2-6,7-6(4)",
+        won=True,
+        match_date=date(2026, 8, 19),
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "None" not in script
+    assert "Round Q" not in script
+    assert "Main Draw Round" not in script
+    assert "Amanda Anisimova" in script
+    assert "Cincinnati" in script

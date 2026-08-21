@@ -109,6 +109,7 @@ from wta_daily.plugins.registry import matches_registry
 from wta_daily.plugins.wta_api_client import DEFAULT_BASE_URL, WtaOfficialApiClient
 from wta_daily.points_table import DEFAULT_POINTS_TABLE_PATH, PointsTable, load_points_table
 from wta_daily.reporting_day import DEFAULT_CUTOFF_HOUR, reporting_date_for_completion
+from wta_daily.rounds import normalize_wta_round_id
 from wta_daily.tournament_timezones import (
     DEFAULT_TOURNAMENT_TIMEZONES_PATH,
     TournamentTimezones,
@@ -158,9 +159,6 @@ def _titleize_tournament(raw: str) -> str:
     return " ".join(_TOURNAMENT_NAME_OVERRIDES.get(word, word) for word in words)
 
 
-#: DrawLevelType in the tournament-matches feed: "M" (main draw) or "Q" (qualifying).
-_DRAW_LEVEL_LABELS = {"M": "Main Draw", "Q": "Qualifying"}
-
 #: WTA tour levels worth scanning for the day-first lookup - deliberately
 #: excludes ITF/Challenger/junior events, which never involve Top N players.
 _RELEVANT_TOUR_LEVELS = {
@@ -193,18 +191,62 @@ class _ActiveTournament:
     country: str | None = None
 
 
-def _fallback_round_label(fixture: dict[str, Any]) -> str:
-    """Best-effort round label built directly from a tournament-level fixture.
+def _fallback_round_label(fixture: dict[str, Any], *, draw_size: int | None) -> str | None:
+    """Best-effort round label built directly from a tournament-level
+    fixture - used only when there's no per-player-endpoint entry to
+    borrow a nicer ``round_name`` from (see the module docstring).
 
-    Used only when there's no per-player-endpoint entry to borrow a nicer
-    ``round_name`` from - see the module docstring.
+    ## Why this needed repairing (production incident, August 2026)
+
+    This used to build ``"{DrawLevelType label} Round {RoundID}"``
+    directly from the raw ``RoundID`` with no normalization at all - so
+    a main-draw quarterfinal fixture (``RoundID == "Q"``, one of the
+    WTA backend's letter-coded late rounds - see
+    :mod:`wta_daily.rounds`) produced the literal, meaningless
+    ``"Main Draw Round Q"`` in narration instead of "the quarterfinals".
+    Every raw ``RoundID`` now goes through the exact same
+    :func:`wta_daily.rounds.normalize_wta_round_id` pipeline every other
+    round-facing fact in this project already uses (see
+    :mod:`wta_daily.plugins.matches.tournament_status`), rather than a
+    second, inconsistent, unnormalized implementation.
+
+    ``DrawLevelType`` disambiguates a genuinely qualifying-bracket
+    fixture from a main-draw one, since the *same* raw ``RoundID`` value
+    means something different in each (a qualifying draw's round
+    numbering is its own small vocabulary, unrelated to the main draw's
+    - so a qualifying "Q"/numeric code is never run through the
+    main-draw round-normalization table, and vice versa; this is what
+    "do not assume every raw 'Q' means 'Qualifying'" - and the converse,
+    not blindly assuming every qualifying-round code is a main-draw
+    round - both come down to). Returns ``None`` (never a guess) when
+    the round can't be confidently normalized - callers must omit the
+    round from narration entirely rather than expose a raw, unexplained
+    value or a literal ``"None"``.
     """
 
-    level = _DRAW_LEVEL_LABELS.get(str(fixture.get("DrawLevelType", "")), "")
-    round_id = fixture.get("RoundID")
-    if round_id is None:
-        return level or "Unknown Round"
-    return f"{level} Round {round_id}".strip()
+    draw_level_type = str(fixture.get("DrawLevelType", ""))
+    raw_round_id = fixture.get("RoundID")
+    if raw_round_id is None:
+        return None
+    round_id = str(raw_round_id)
+
+    if draw_level_type == "Q":
+        # A genuinely qualifying-bracket fixture. Qualifying round
+        # numbering ("1"/"2"/"3" for qualifying rounds 1-3) is a
+        # distinct, small vocabulary from the main draw's - narrated
+        # plainly rather than run through the main-draw
+        # round-normalization table, where the same raw value can mean
+        # something else entirely.
+        return f"Qualifying Round {round_id}" if round_id.isdigit() else "Qualifying"
+
+    if draw_level_type != "M":
+        # An unexpected/unrecognized draw level - never guess.
+        return None
+
+    normalized = normalize_wta_round_id(round_id, draw_size=draw_size)
+    if normalized is None:
+        return None
+    return _friendly_round(normalized)
 
 
 def _parse_utc_timestamp(raw: Any) -> datetime | None:
@@ -421,7 +463,9 @@ class WtaOfficialMatchProvider(MatchProvider):
                 player_a, player_b = str(fixture.get("PlayerIDA", "")), str(fixture.get("PlayerIDB", ""))
                 for player_id, slot in ((player_a, "A"), (player_b, "B")):
                     if player_id in player_ids and player_id not in results:
-                        result = self._build_match_result_from_fixture(fixture, slot, tournament.name, tz)
+                        result = self._build_match_result_from_fixture(
+                            fixture, slot, tournament.name, tz, tournament.draw_size
+                        )
                         if result is not None:
                             results[player_id] = result
 
@@ -695,7 +739,12 @@ class WtaOfficialMatchProvider(MatchProvider):
         return reporting_date_for_completion(parsed, tz=tz, cutoff_hour=self._reporting_cutoff_hour)
 
     def _build_match_result_from_fixture(
-        self, fixture: dict[str, Any], our_slot: str, tournament_name: str, tz: ZoneInfo | None
+        self,
+        fixture: dict[str, Any],
+        our_slot: str,
+        tournament_name: str,
+        tz: ZoneInfo | None,
+        draw_size: int | None,
     ) -> MatchResult | None:
         winner_slot = {"2": "A", "3": "B"}.get(str(fixture.get("Winner")))
         if winner_slot is None:
@@ -710,7 +759,7 @@ class WtaOfficialMatchProvider(MatchProvider):
         return MatchResult(
             opponent=opponent_name or "Unknown Opponent",
             tournament=_titleize_tournament(tournament_name),
-            round=_fallback_round_label(fixture),
+            round=_fallback_round_label(fixture, draw_size=draw_size),
             score=_parse_score(str(fixture.get("ScoreString", ""))),
             won=(winner_slot == our_slot),
             match_date=self._reporting_date(fixture.get("MatchTimeStamp"), tz),

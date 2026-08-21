@@ -149,7 +149,8 @@ def _render(
             fill=outcome_color,
             anchor="la",
         )
-        detail_line = f"{player.match.score}    |    {player.match.tournament} \u2014 {player.match.round}"
+        round_suffix = f" \u2014 {player.match.round}" if player.match.round else ""
+        detail_line = f"{player.match.score}    |    {player.match.tournament}{round_suffix}"
         draw.text(
             (margin * 1.6, panel_top + height * 0.20),
             detail_line,

@@ -592,6 +592,11 @@ def test_an_earlier_reporting_day_elimination_can_use_prior_status_language() ->
 
 
 def test_an_already_reported_elimination_still_gets_brief_language_when_no_match_today() -> None:
+    """The brief (already-reported) elimination language must remain
+    short (no points/eliminator repeated) - but must express this as a
+    completed historical fact, never ongoing-state language like
+    'remains'/'still' (see the module docstring's production incident)."""
+
     status = TournamentRunStatus(
         state=TournamentState.ELIMINATED,
         round_reached="R16",
@@ -602,7 +607,10 @@ def test_an_already_reported_elimination_still_gets_brief_language_when_no_match
     sentence = build_tournament_status_sentence(status, "Linda Noskova", random.Random(0), match=None)
 
     assert sentence is not None
-    assert "remains" in sentence.lower() or "still" in sentence.lower()
+    lowered = sentence.lower()
+    assert "still" not in lowered
+    assert "remains" not in lowered
+    assert "ended" in lowered or "came to an end" in lowered
 
 
 def test_backward_compatible_when_match_is_omitted() -> None:

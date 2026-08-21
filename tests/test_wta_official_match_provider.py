@@ -494,7 +494,10 @@ def test_get_matches_for_date_ignores_doubles_and_unfinished_fixtures(
 
 def test_get_matches_for_date_uses_fallback_round_label(monkeypatch: pytest.MonkeyPatch) -> None:
     """No per-player entry exists to borrow a nicer round name from, so the
-    plainer DrawLevelType+RoundID label is used - see module docstring."""
+    fixture's own RoundID is normalized through wta_daily.rounds and
+    rendered with the same friendly vocabulary the per-player endpoint
+    path uses - never the old, unnormalized 'Main Draw Round N' label
+    (see the module docstring's 'Main Draw Round Q' production incident)."""
 
     provider = _provider_for_day_first(
         monkeypatch,
@@ -506,7 +509,160 @@ def test_get_matches_for_date_uses_fallback_round_label(monkeypatch: pytest.Monk
 
     result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
 
-    assert result.matches["P1"].round == "Main Draw Round 2"
+    # No draw_size configured on this catalogue entry -> the safe default
+    # (4 numbered rounds, i.e. a 128-style bracket) is used, under which
+    # RoundID "2" normalizes to R64.
+    assert result.matches["P1"].round == "Round of 64"
+
+
+# ---------------------------------------------------------------------------
+# Round normalization (production regression, August 2026): a main-draw
+# quarterfinal fixture's RoundID "Q" was leaking straight into narration as
+# the literal, meaningless "Main Draw Round Q" instead of being normalized
+# like every other round-facing fact in this project.
+# ---------------------------------------------------------------------------
+
+
+def test_letter_coded_quarterfinal_round_id_is_never_exposed_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact regression: RoundID 'Q' in a MAIN DRAW fixture must
+    normalize to a real round name, never leak through as 'Q' or
+    'Main Draw Round Q'."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id="Q", draw_level_type="M")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    round_value = result.matches["P1"].round
+    assert round_value == "Quarterfinal"
+    assert round_value is not None
+    assert "Q" != round_value
+    assert "Main Draw" not in round_value
+
+
+@pytest.mark.parametrize(
+    ("round_id", "expected"),
+    [
+        ("Q", "Quarterfinal"),
+        ("S", "Semifinal"),
+        ("F", "Final"),
+    ],
+)
+def test_letter_coded_rounds_are_normalized_to_friendly_names(
+    monkeypatch: pytest.MonkeyPatch, round_id: str, expected: str
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id=round_id, draw_level_type="M")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches["P1"].round == expected
+
+
+def test_numeric_round_id_out_of_range_for_the_draw_size_omits_round_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unnormalizable RoundID (e.g. inconsistent with the configured
+    draw size) must degrade to no round at all, never a raw/invalid value
+    - the rest of the match result (opponent, score, tournament) is
+    unaffected."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry(draw_size=32)],
+        fixtures_by_tournament={
+            # A 32-draw only has 2 numbered rounds before QF; "9" is out
+            # of range for any real draw size.
+            (1017, 2026): [_tournament_level_fixture(round_id="9", draw_level_type="M")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    match = result.matches["P1"]
+    assert match.round is None
+    assert match.opponent == "Opponent Name"
+    assert match.score == "6-3, 6-2" or match.score  # score is still present regardless
+
+
+def test_qualifying_bracket_round_id_is_narrated_as_qualifying_not_main_draw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely qualifying-bracket fixture (DrawLevelType == 'Q') must
+    never be run through the main-draw round vocabulary - a numeric
+    qualifying RoundID means something entirely different there."""
+
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id="1", draw_level_type="Q")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches["P1"].round == "Qualifying Round 1"
+
+
+def test_qualifying_bracket_with_a_non_numeric_round_id_falls_back_to_bare_qualifying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id="Q", draw_level_type="Q")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches["P1"].round == "Qualifying"
+
+
+def test_unrecognized_draw_level_type_omits_round_rather_than_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={
+            (1017, 2026): [_tournament_level_fixture(round_id="2", draw_level_type="X")]
+        },
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches["P1"].round is None
+
+
+def test_missing_round_id_omits_round_rather_than_a_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _tournament_level_fixture(draw_level_type="M")
+    del fixture["RoundID"]
+    provider = _provider_for_day_first(
+        monkeypatch,
+        catalogue_entries=[_tournament_catalogue_entry()],
+        fixtures_by_tournament={(1017, 2026): [fixture]},
+    )
+
+    result = provider.get_matches_for_date([PLAYER], date(2026, 8, 15))
+
+    assert result.matches["P1"].round is None
 
 
 def test_get_matches_for_date_normalizes_local_offset_timestamps_to_utc(

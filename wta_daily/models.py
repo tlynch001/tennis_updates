@@ -117,13 +117,22 @@ class MatchResult:
     provider cannot establish that date from an authoritative, match-level
     source - per the project's rule that an unknown date is preferable to a
     confidently incorrect one (e.g. silently substituting the tournament's
-    start date). Every field below other than ``match_date`` is expected to
-    be known whenever a :class:`MatchResult` exists at all.
+    start date). ``opponent``/``tournament``/``score``/``won`` are expected
+    to be known whenever a :class:`MatchResult` exists at all.
+
+    ``round`` is ``None`` when a provider's raw round identifier couldn't be
+    confidently normalized into a real round name (see
+    :mod:`wta_daily.rounds` and
+    :mod:`wta_daily.plugins.matches.wta_official`'s ``_fallback_round_label``)
+    - the same "an unknown fact is preferable to a confidently wrong one"
+    rule as ``match_date``. Every narration/graphics consumer of this field
+    must gracefully omit the round rather than expose a raw, unexplained
+    provider code (e.g. a bare letter like ``"Q"``) or a literal ``"None"``.
     """
 
     opponent: str
     tournament: str
-    round: str
+    round: str | None
     score: str
     won: bool
     match_date: date | None
@@ -143,10 +152,11 @@ class MatchResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MatchResult:
         raw_date = data.get("date")
+        raw_round = data.get("round")
         return cls(
             opponent=str(data["opponent"]),
             tournament=str(data["tournament"]),
-            round=str(data["round"]),
+            round=str(raw_round) if raw_round is not None else None,
             score=str(data["score"]),
             won=bool(data["won"]),
             match_date=date.fromisoformat(raw_date) if raw_date else None,
