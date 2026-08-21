@@ -103,6 +103,19 @@ MATCH_WIN: list[str] = [
     "was the stronger player against {opponent}, closing it out {score} at {tournament}",
 ]
 
+#: Used instead of MATCH_WIN whenever MatchResult.round is None - see
+#: wta_daily.plugins.matches.wta_official's round-normalization docstring
+#: for why a round can be legitimately unknown. Never substitutes a raw
+#: provider code or a placeholder; simply omits the round clause.
+MATCH_WIN_NO_ROUND: list[str] = [
+    "defeated {opponent} {score} at {tournament}",
+    "got past {opponent} {score} at {tournament}",
+    "came through against {opponent}, winning {score} at {tournament}",
+    "took care of business against {opponent}, {score}, at {tournament}",
+    "beat {opponent} {score} in a solid showing at {tournament}",
+    "was the stronger player against {opponent}, closing it out {score} at {tournament}",
+]
+
 MATCH_LOSS: list[str] = [
     "fell to {opponent} {score} in the {round} at {tournament}",
     "was defeated by {opponent}, {score}, at {tournament}",
@@ -110,6 +123,17 @@ MATCH_LOSS: list[str] = [
     "came up short against {opponent}, dropping a {score} decision at {tournament}",
     "was eliminated by {opponent} {score} in the {round} at {tournament}",
     "couldn't get past {opponent}, losing {score} in the {round} at {tournament}",
+]
+
+#: Used instead of MATCH_LOSS whenever MatchResult.round is None - see
+#: MATCH_WIN_NO_ROUND's docstring.
+MATCH_LOSS_NO_ROUND: list[str] = [
+    "fell to {opponent} {score} at {tournament}",
+    "was defeated by {opponent}, {score}, at {tournament}",
+    "suffered a loss to {opponent}, going down {score} at {tournament}",
+    "came up short against {opponent}, dropping a {score} decision at {tournament}",
+    "was eliminated by {opponent} {score} at {tournament}",
+    "couldn't get past {opponent}, losing {score} at {tournament}",
 ]
 
 NO_MATCH: list[str] = [

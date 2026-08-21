@@ -67,8 +67,10 @@ def is_result_of_reported_match(status: TournamentRunStatus | None, match: Match
     match sentence immediately before it already stated - whereas a
     *previously* known result (no match narrated today, or a status
     already reported on an earlier day) uses the declarative "was
-    eliminated by.../remains out of the draw" language that does state
-    those facts, since they haven't been said yet in this run's script.
+    eliminated by.../her run ended in..." language that does state those
+    facts (since they haven't been said yet in this run's script), always
+    in simple past tense - elimination is a single completed event, never
+    described with ongoing-state language like "still"/"remains".
     """
 
     if status is None or match is None:

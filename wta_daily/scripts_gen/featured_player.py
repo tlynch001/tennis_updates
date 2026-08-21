@@ -61,6 +61,21 @@ def _finish(sentence: str) -> str:
     return finished[:1].upper() + finished[1:] if finished else finished
 
 
+def _pool_for_round(pool: list[str], round_value: str | None) -> list[str]:
+    """Filter out any template referencing ``{round}`` when the round
+    itself is unknown (see
+    :mod:`wta_daily.plugins.matches.wta_official`'s round-normalization
+    docstring for how/why that happens) - never substitutes a raw
+    provider code or a literal "None" into the sentence. A no-op (the
+    full pool) whenever the round is known.
+    """
+
+    if round_value is not None:
+        return pool
+    filtered = [phrase for phrase in pool if "{round}" not in phrase]
+    return filtered or pool
+
+
 def _pick_unused_favorite_label(rng: random.Random, used: set[str]) -> str:
     """Draw an ``AMERICA_FAVORITE_LABELS`` phrase not already used
     elsewhere in this segment.
@@ -188,7 +203,7 @@ def _match_sentence(
     score = format_score_for_narration(match.score)
     if match.won:
         favorite = _pick_unused_favorite_label(rng, used_labels)
-        return rng.choice(fp.AMERICA_FAVORITE_WIN).format(
+        return rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_WIN, match.round)).format(
             favorite=favorite,
             name=name,
             opponent=match.opponent,
@@ -207,7 +222,7 @@ def _match_sentence(
     # capitalized and punctuated - rather than "...7-5,6-2. a temporary
     # setback..." running two sentences together with a lowercase start.
     base_favorite = _pick_unused_favorite_label(rng, used_labels)
-    base = rng.choice(fp.AMERICA_FAVORITE_LOSS).format(
+    base = rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_LOSS, match.round)).format(
         favorite=base_favorite,
         name=name,
         opponent=match.opponent,

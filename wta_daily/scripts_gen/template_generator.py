@@ -74,7 +74,9 @@ class TemplateScriptGenerator(ScriptGenerator):
             "new": _PhraseCycler(phrases.MOVEMENT_NEW, rng),
             "unknown": _PhraseCycler(phrases.MOVEMENT_UNKNOWN, rng),
             "win": _PhraseCycler(phrases.MATCH_WIN, rng),
+            "win_no_round": _PhraseCycler(phrases.MATCH_WIN_NO_ROUND, rng),
             "loss": _PhraseCycler(phrases.MATCH_LOSS, rng),
+            "loss_no_round": _PhraseCycler(phrases.MATCH_LOSS_NO_ROUND, rng),
             "no_match": _PhraseCycler(phrases.NO_MATCH, rng),
             "gap": _PhraseCycler(phrases.POINTS_GAP_TEMPLATES, rng),
             "next_ranking_note": _PhraseCycler(phrases.NEXT_RANKING_NOTES, rng),
@@ -160,7 +162,16 @@ class TemplateScriptGenerator(ScriptGenerator):
         elif player.match is None:
             sentence += "." if superseded else f", and {cyclers['no_match'].next()}."
         else:
-            pool = cyclers["win"] if player.match.won else cyclers["loss"]
+            # A missing round (see wta_daily.plugins.matches.wta_official's
+            # round-normalization docstring for how/why that happens) uses
+            # a dedicated phrase pool with no {round} placeholder at all -
+            # never a raw/invalid provider code or a literal "None"
+            # substituted into the sentence.
+            has_round = player.match.round is not None
+            if player.match.won:
+                pool = cyclers["win"] if has_round else cyclers["win_no_round"]
+            else:
+                pool = cyclers["loss"] if has_round else cyclers["loss_no_round"]
             match_clause = pool.next().format(
                 opponent=player.match.opponent,
                 score=format_score_for_narration(player.match.score),

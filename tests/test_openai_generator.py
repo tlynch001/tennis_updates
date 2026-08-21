@@ -159,3 +159,58 @@ def test_user_prompt_includes_featured_player_tournament_status() -> None:
 
     assert "Tournament status:" in prompt
     assert "champion" in prompt
+
+
+def test_match_description_omits_round_when_unknown() -> None:
+    from wta_daily.scripts_gen.openai_generator import _match_description
+
+    match = MatchResult(
+        opponent="Amanda Anisimova",
+        tournament="Cincinnati",
+        round=None,
+        score="6-4,2-6,7-6(4)",
+        won=True,
+        match_date=date(2026, 8, 19),
+    )
+
+    description = _match_description(match)
+
+    assert "None" not in description
+    assert "Amanda Anisimova" in description
+    assert "Cincinnati" in description
+
+
+def test_match_description_includes_round_when_known() -> None:
+    from wta_daily.scripts_gen.openai_generator import _match_description
+
+    match = MatchResult(
+        opponent="Amanda Anisimova",
+        tournament="Cincinnati",
+        round="Quarterfinal",
+        score="6-4,2-6,7-6(4)",
+        won=True,
+        match_date=date(2026, 8, 19),
+    )
+
+    description = _match_description(match)
+
+    assert "Quarterfinal" in description
+
+
+def test_user_prompt_never_includes_a_raw_none_round() -> None:
+    player = _player(
+        match=MatchResult(
+            opponent="Amanda Anisimova",
+            tournament="Cincinnati",
+            round=None,
+            score="6-4,2-6,7-6(4)",
+            won=True,
+            match_date=date(2026, 8, 19),
+        )
+    )
+    report = DailyReport(report_date=date(2026, 8, 19), tour="wta", players=[player])
+
+    prompt = _build_user_prompt(report, ScriptConfig())
+
+    assert "(None," not in prompt
+    assert "None," not in prompt

@@ -618,3 +618,51 @@ def test_pursuit_language_still_varies_across_many_days() -> None:
     segments = {build_segment(featured, top_n=TOP_N, rng=_rng(f"variety-{i}")) for i in range(40)}
 
     assert len(segments) > 1
+
+
+# --- Historical elimination wording + round-omission (featured player) --
+
+
+def test_previously_reported_elimination_uses_completed_historical_wording() -> None:
+    featured = _featured(
+        rank=28,
+        match=None,
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            tournament="Cincinnati",
+            round_reached="R16",
+            round_label="the Round of 16",
+            is_new_development=False,
+        ),
+    )
+
+    for i in range(20):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"historical-{i}"))
+        assert segment is not None
+        lowered = segment.lower()
+        for forbidden in ("still over", "remains out of the draw", "eliminated back in"):
+            assert forbidden not in lowered
+
+
+def test_round_omitted_gracefully_in_featured_match_sentence() -> None:
+    """A featured-player match whose round is unknown must never surface
+    a raw round code or literal 'None' in her segment."""
+
+    featured = _featured(
+        rank=28,
+        match=MatchResult(
+            opponent="Amanda Anisimova",
+            tournament="Cincinnati",
+            round=None,
+            score="6-4,2-6,7-6(4)",
+            won=True,
+            match_date=date(2026, 8, 19),
+        ),
+    )
+
+    for i in range(20):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"round-omit-{i}"))
+        assert segment is not None
+        assert "None" not in segment
+        assert "Round Q" not in segment
+        assert "Amanda Anisimova" in segment

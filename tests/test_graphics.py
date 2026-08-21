@@ -113,6 +113,40 @@ def test_render_player_card_handles_match_with_unconfirmed_date(tmp_path: Path) 
         assert img.size == (640, 360)
 
 
+def test_render_player_card_handles_match_with_unknown_round(tmp_path: Path) -> None:
+    """A match whose round couldn't be confidently normalized (see
+    wta_daily.plugins.matches.wta_official's round-normalization
+    docstring) must render without crashing or embedding a literal
+    'None' in the card text."""
+
+    config = GraphicsConfig(width=640, height=360)
+    match = MatchResult(
+        opponent="Amanda Anisimova",
+        tournament="Cincinnati",
+        round=None,
+        score="6-4,2-6,7-6(4)",
+        won=True,
+        match_date=date(2026, 8, 19),
+    )
+    player = PlayerReport(
+        rank=1,
+        name="Unknown Round Player",
+        player_id="p1",
+        country_code="USA",
+        points=1000,
+        movement=Movement.SAME,
+        previous_rank=1,
+        match=match,
+    )
+    output_path = tmp_path / "card.png"
+
+    render_player_card(player, output_path, config, top_n=10)
+
+    assert output_path.exists()
+    with Image.open(output_path) as img:
+        assert img.size == (640, 360)
+
+
 def test_render_player_card_handles_unknown_movement(tmp_path: Path) -> None:
     """No previous snapshot at all - graphics must render neutrally, not as 'NEW'."""
 
@@ -163,6 +197,36 @@ def test_render_featured_card_creates_correctly_sized_png(tmp_path: Path) -> Non
     result_path = render_featured_card(featured, output_path, config, top_n=10)
 
     assert result_path == output_path
+    assert output_path.exists()
+    with Image.open(output_path) as img:
+        assert img.size == (640, 360)
+
+
+def test_render_featured_card_handles_match_with_unknown_round(tmp_path: Path) -> None:
+    config = GraphicsConfig(width=640, height=360)
+    match = MatchResult(
+        opponent="Amanda Anisimova",
+        tournament="Cincinnati",
+        round=None,
+        score="6-4,2-6,7-6(4)",
+        won=True,
+        match_date=date(2026, 8, 19),
+    )
+    featured = FeaturedPlayerReport(
+        name="Emma Navarro",
+        player_id="325410",
+        tagline="america_favorite",
+        country_code="USA",
+        rank=28,
+        points=1669,
+        movement=Movement.SAME,
+        previous_rank=28,
+        match=match,
+    )
+    output_path = tmp_path / "featured.png"
+
+    render_featured_card(featured, output_path, config, top_n=10)
+
     assert output_path.exists()
     with Image.open(output_path) as img:
         assert img.size == (640, 360)
