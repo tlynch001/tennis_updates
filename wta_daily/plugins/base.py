@@ -148,7 +148,14 @@ class GraphicsRenderer(ABC):
         """Render the 1920x1080 leaderboard overview PNG."""
 
     @abstractmethod
-    def render_player_card(self, player: PlayerReport, output_dir: Path, *, top_n: int) -> Path:
+    def render_player_card(
+        self,
+        player: PlayerReport,
+        output_dir: Path,
+        *,
+        top_n: int,
+        supports_daily_matches: bool = True,
+    ) -> Path:
         """Render one player's card PNG into ``output_dir``.
 
         ``top_n`` is the size of the tracked list (e.g. 10) and is only used
@@ -157,7 +164,12 @@ class GraphicsRenderer(ABC):
 
     @abstractmethod
     def render_featured_card(
-        self, featured: FeaturedPlayerReport, output_path: Path, *, top_n: int
+        self,
+        featured: FeaturedPlayerReport,
+        output_path: Path,
+        *,
+        top_n: int,
+        supports_daily_matches: bool = True,
     ) -> Path:
         """Render the featured-player spotlight PNG - visually related to,
         but clearly distinguishable from, a normal Top N player card (see

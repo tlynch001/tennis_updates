@@ -16,16 +16,32 @@ from wta_daily.models import PlayerReport
 
 
 def render_player_card(
-    player: PlayerReport, output_path: Path, graphics: GraphicsConfig, *, top_n: int
+    player: PlayerReport,
+    output_path: Path,
+    graphics: GraphicsConfig,
+    *,
+    top_n: int,
+    supports_daily_matches: bool = True,
 ) -> Path:
     try:
-        return _render(player, output_path, graphics, top_n=top_n)
+        return _render(
+            player,
+            output_path,
+            graphics,
+            top_n=top_n,
+            supports_daily_matches=supports_daily_matches,
+        )
     except Exception as exc:  # noqa: BLE001
         raise GraphicsError(f"Failed to render player card for {player.name}: {exc}") from exc
 
 
 def _render(
-    player: PlayerReport, output_path: Path, graphics: GraphicsConfig, *, top_n: int
+    player: PlayerReport,
+    output_path: Path,
+    graphics: GraphicsConfig,
+    *,
+    top_n: int,
+    supports_daily_matches: bool = True,
 ) -> Path:
     theme = graphics.theme
     width, height = graphics.width, graphics.height
@@ -170,9 +186,12 @@ def _render(
             anchor="la",
         )
     else:
-        message = "Did not play yesterday."
-        if player.match_error:
-            message = "Match data unavailable today."
+        if not supports_daily_matches:
+            message = f"{player.points:,} ranking points"
+        else:
+            message = "Did not play yesterday."
+            if player.match_error:
+                message = "Match data unavailable today."
         draw.text(
             (margin * 1.6, panel_top + height * 0.10),
             message,

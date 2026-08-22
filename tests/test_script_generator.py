@@ -784,13 +784,56 @@ def test_atp_template_script_uses_atp_branding_and_male_pronouns() -> None:
     script = TemplateScriptGenerator().generate(report)
 
     assert "ATP Top" in script
+    assert "Rankings Update" in script
     assert "WTA" not in script
     assert "women's game" not in script
-    assert "after he " in script
     assert "after she " not in script
     padded = f" {script} "
     assert " she " not in padded
     assert " her " not in padded
     assert " She's " not in padded
     assert " she's " not in padded
+
+
+def test_atp_rankings_only_script_does_not_claim_players_did_not_play() -> None:
+    players = [
+        PlayerReport(
+            rank=1,
+            name="Carlos Alcaraz",
+            player_id="1",
+            country_code="ESP",
+            points=12000,
+            movement=Movement.UNKNOWN,
+        ),
+        PlayerReport(
+            rank=2,
+            name="Jannik Sinner",
+            player_id="2",
+            country_code="ITA",
+            points=11000,
+            movement=Movement.UP,
+            previous_rank=3,
+        ),
+    ]
+    report = DailyReport(
+        report_date=date(2026, 8, 22),
+        tour="atp",
+        players=players,
+        ranking_date=date(2026, 8, 18),
+    )
+
+    script = TemplateScriptGenerator().generate(report)
+    lowered = script.lower()
+
+    assert "did not play yesterday" not in lowered
+    assert "wta" not in lowered
+    assert "eliminat" not in lowered
+    assert "champion" not in lowered
+    assert "defeated" not in lowered
+    assert "lost to" not in lowered
+    assert " she " not in f" {script} "
+    assert " her " not in f" {script} "
+    assert "12,000 ranking points" in script
+    assert "Carlos Alcaraz" in script
+    assert "Rankings Update" in script
 

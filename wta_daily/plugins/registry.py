@@ -89,8 +89,10 @@ def load_builtin_plugins() -> None:
     from wta_daily.plugins.matches import api_tennis as _matches_api_tennis  # noqa: F401
     from wta_daily.plugins.matches import best_of as _matches_best_of  # noqa: F401
     from wta_daily.plugins.matches import live_tennis_api as _matches_live_tennis_api  # noqa: F401
+    from wta_daily.plugins.matches import none as _matches_none  # noqa: F401
     from wta_daily.plugins.matches import sample as _matches_sample  # noqa: F401
     from wta_daily.plugins.matches import wta_official as _matches_wta  # noqa: F401
+    from wta_daily.plugins.rankings import balldontlie_atp as _rankings_balldontlie_atp  # noqa: F401
     from wta_daily.plugins.rankings import sample as _rankings_sample  # noqa: F401
     from wta_daily.plugins.rankings import wta_official as _rankings_wta  # noqa: F401
     from wta_daily.scripts_gen import (

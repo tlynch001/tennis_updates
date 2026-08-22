@@ -44,6 +44,8 @@ def test_wta_profile_reproduces_current_production_presentation() -> None:
         == "Data: WTA (api.wtatennis.com)  |  Generated automatically  |  wta-daily"
     )
     assert WTA.git_commit_message_template == "Daily WTA Update {date}"
+    assert WTA.supports_daily_matches is True
+    assert WTA.supports_tournament_status is True
 
 
 def test_atp_profile_is_presentation_only() -> None:
@@ -56,10 +58,12 @@ def test_atp_profile_is_presentation_only() -> None:
     assert ATP.possessive == "his"
     assert ATP.subject_cap == "He"
     assert ATP.ranking_body == "the ATP"
-    # Do not invent an ATP rankings URL that this repo does not call.
     assert "api.wtatennis.com" not in ATP.attribution
     assert "WTA" not in ATP.attribution
-    assert ATP.git_commit_message_template == "Daily ATP Update {date}"
+    assert ATP.attribution == "Rankings: BALLDONTLIE ATP API"
+    assert ATP.git_commit_message_template == "ATP rankings update {date}"
+    assert ATP.supports_daily_matches is False
+    assert ATP.supports_tournament_status is False
 
 
 def test_wta_phrase_formatting_keeps_production_wording() -> None:
@@ -135,6 +139,14 @@ def test_atp_tour_with_sample_providers_is_allowed() -> None:
         "atp",
         rankings_provider_name="sample",
         match_provider_name="sample",
+    )
+
+
+def test_atp_tour_with_balldontlie_rankings_and_no_matches_is_allowed() -> None:
+    assert_tour_providers_compatible(
+        "atp",
+        rankings_provider_name="balldontlie_atp",
+        match_provider_name="none",
     )
 
 

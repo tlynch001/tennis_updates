@@ -208,8 +208,10 @@ def test_atp_description_uses_atp_branding_not_wta() -> None:
 
     description = generate_description(report)
 
-    assert "ATP Top 1 Daily Update" in description
-    assert "latest ATP Top 1 rankings." in description
-    assert "daily ATP Top 1 ranking" in description
+    assert "ATP Top 1 Rankings Update" in description
+    assert "rankings update" in description.lower()
+    assert "did not play" not in description.lower()
+    assert "Daily Update" not in description
+    assert "daily ATP" not in description
     assert "WTA" not in description
 

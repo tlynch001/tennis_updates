@@ -41,6 +41,7 @@ what's next.
 - [YouTube publishing (Phase 3: the actual upload)](#youtube-publishing)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
 - [Quick start](#quick-start)
+- [ATP v1 (rankings-only)](#atp-v1-rankings-only)
 - [Configuration](#configuration)
 - [Folder structure](#folder-structure)
 - [Architecture & extending it](#architecture--extending-it)
@@ -1766,6 +1767,10 @@ python -m wta_daily.cli --config config/config.yaml
 python -m wta_daily.cli --config config/config.yaml --date 2026-08-09 --verbose
 ```
 
+For the separate ATP v1 rankings-only product, see
+[ATP v1 (rankings-only)](#atp-v1-rankings-only) — do not point production
+WTA config at those providers.
+
 A successful run produces, for the target date, everything Phase 1 promises:
 
 ```text
@@ -1798,6 +1803,59 @@ pytest
 ruff check wta_daily tests
 mypy wta_daily
 ```
+
+## ATP v1 (rankings-only)
+
+ATP v1 is a **zero-cost weekly Top 10 rankings update**. It is a separate
+product from the production WTA daily match show. WTA behavior, strings,
+and default config are unchanged.
+
+**What it does**
+
+- Current ATP Top 10 (rank, ranking points, movement vs the previous
+  snapshot, official ranking-list date when supplied)
+- Rankings-focused title, YouTube description, and narration
+- Isolated paths: `data/atp`, `output/atp`, `logs/atp`
+
+**Data source**
+
+- Provider name: `balldontlie_atp`
+- Endpoint: `GET https://api.balldontlie.io/atp/v1/rankings` (BALLDONTLIE
+  permanent free tier)
+- Auth: `Authorization` header = the API key (not `Bearer`)
+- Required environment variable: `BALLDONTLIE_API_KEY`
+
+**How to store the key**
+
+1. Copy [`.env.example`](.env.example) to a local, git-ignored `.env`.
+2. Set `BALLDONTLIE_API_KEY=` to your real key in that file only.
+3. Do **not** put the key in YAML, Python source, tests, docs, commits, or
+   PR descriptions. The CLI already loads `.env` via `wta_daily.config`.
+
+**How to run it locally**
+
+```bash
+cp .env.example .env
+# edit .env and set BALLDONTLIE_API_KEY=<your key>
+
+python -m wta_daily.cli --config config/config.atp.example.yaml
+```
+
+The example config selects `balldontlie_atp`, sets `match_provider: none`,
+and disables featured player, ElevenLabs, video, and YouTube publishing.
+
+**What ATP v1 intentionally does not support**
+
+- Daily match results (no ATP match provider)
+- Tournament status (elimination / champion / points earned / previous year)
+- Featured-player analysis
+- Scheduling (the weekly Monday/Tuesday cadence is not hard-coded here)
+- YouTube publishing / upload
+
+A missing match provider means match status is **unknown / not part of
+this product**. It does **not** mean a player "did not play yesterday."
+
+Research that led to this product: [`docs/atp-free-data-source-spike.md`](docs/atp-free-data-source-spike.md).
 
 ## Configuration
 
@@ -1932,12 +1990,12 @@ knowledge of `api.wtatennis.com`, ElevenLabs, ffmpeg, or anything else
 concrete. That's what makes each of these additions a "write one file, wire
 it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 
-- **ATP version**: add `wta_daily/plugins/rankings/atp_official.py` and
-  `wta_daily/plugins/matches/atp_official.py` implementing the same two
-  interfaces against whatever ATP data source you choose, register them, set
-  `tour: atp` and the new provider names in config. `rankings-history.json`
-  already stores a `tour` field per snapshot so ATP and WTA history can
-  coexist.
+- **ATP version**: ATP v1 is already a rankings-only product using
+  `balldontlie_atp` — see [ATP v1 (rankings-only)](#atp-v1-rankings-only).
+  A future ATP match provider would be a new module behind the existing
+  `MatchProvider` interface, not a rewrite of this path.
+  `rankings-history.json` already stores a `tour` field per snapshot so ATP
+  and WTA history can coexist.
 - **Top 25 instead of Top 10**: change `top_n: 25` in config. Nothing else.
 - **Combine several data sources for one concern**: plugins can compose
   other plugins purely through the registry - `wta_daily/plugins/matches/best_of.py`

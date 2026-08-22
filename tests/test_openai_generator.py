@@ -245,7 +245,7 @@ def test_atp_system_prompt_uses_atp_identity_and_male_pronouns() -> None:
     assert "moves her to" not in prompt
 
 
-def test_atp_user_prompt_tournament_status_uses_male_object_pronoun() -> None:
+def test_atp_user_prompt_is_rankings_only_and_omits_match_claims() -> None:
     player = _player(
         tournament_status=TournamentRunStatus(
             state=TournamentState.ELIMINATED,
@@ -256,12 +256,21 @@ def test_atp_user_prompt_tournament_status_uses_male_object_pronoun() -> None:
         ),
         match=_loss(),
     )
-    report = DailyReport(report_date=date(2026, 8, 19), tour="atp", players=[player])
+    report = DailyReport(
+        report_date=date(2026, 8, 19),
+        tour="atp",
+        players=[player],
+        ranking_date=date(2026, 8, 18),
+        match_target_date=date(2026, 8, 18),
+    )
 
     prompt = _build_user_prompt(report, ScriptConfig())
 
     assert "Tour: ATP" in prompt
-    assert "narrating for him" in prompt
-    assert "narrating for her" not in prompt
+    assert "Official ranking-list date: 2026-08-18" in prompt
+    assert "ranking points" in prompt
+    assert "did not play" not in prompt.lower()
+    assert "Latest match" not in prompt
+    assert "Tournament status" not in prompt
     assert "WTA" not in prompt
 

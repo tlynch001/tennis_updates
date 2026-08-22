@@ -351,7 +351,7 @@ def test_atp_tour_with_sample_providers_is_allowed_for_presentation(tmp_path: Pa
     assert config.tour == "atp"
     assert config.tour_profile.display_name == "ATP"
     assert config.tour_profile.subject == "he"
-    assert config.git.commit_message_template == "Daily ATP Update {date}"
+    assert config.git.commit_message_template == "ATP rankings update {date}"
 
 
 def test_wta_explicit_commit_template_is_unchanged(tmp_path: Path) -> None:
