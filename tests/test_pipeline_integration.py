@@ -1387,11 +1387,13 @@ def test_atp_sample_pipeline_writes_atp_branded_title_and_description(tmp_path: 
     description = (output_dir / "youtube_description.txt").read_text(encoding="utf-8")
     script = (output_dir / "script.txt").read_text(encoding="utf-8")
 
-    assert title == "ATP Top 5 Update \u2014 August 9, 2026"
+    assert title == "ATP Top 5 Rankings Update \u2014 August 9, 2026"
     assert "WTA" not in title
     assert "ATP" in description
     assert "WTA" not in description
+    assert "did not play" not in description.lower()
     assert "WTA" not in script
-    assert "after he " in script
+    assert "did not play yesterday" not in script.lower()
     assert "after she " not in script
+    assert " she " not in f" {script} "
 

@@ -25,14 +25,38 @@ class PillowGraphicsRenderer(GraphicsRenderer):
     def render_leaderboard(self, report: DailyReport, output_path: Path) -> Path:
         return render_leaderboard(report, output_path, self._config)
 
-    def render_player_card(self, player: PlayerReport, output_dir: Path, *, top_n: int) -> Path:
+    def render_player_card(
+        self,
+        player: PlayerReport,
+        output_dir: Path,
+        *,
+        top_n: int,
+        supports_daily_matches: bool = True,
+    ) -> Path:
         output_path = output_dir / f"{player.rank:02d}.png"
-        return render_player_card(player, output_path, self._config, top_n=top_n)
+        return render_player_card(
+            player,
+            output_path,
+            self._config,
+            top_n=top_n,
+            supports_daily_matches=supports_daily_matches,
+        )
 
     def render_featured_card(
-        self, featured: FeaturedPlayerReport, output_path: Path, *, top_n: int
+        self,
+        featured: FeaturedPlayerReport,
+        output_path: Path,
+        *,
+        top_n: int,
+        supports_daily_matches: bool = True,
     ) -> Path:
-        return render_featured_card(featured, output_path, self._config, top_n=top_n)
+        return render_featured_card(
+            featured,
+            output_path,
+            self._config,
+            top_n=top_n,
+            supports_daily_matches=supports_daily_matches,
+        )
 
     def render_thumbnail(self, report: DailyReport, output_path: Path) -> Path:
         return render_thumbnail(report, output_path, self._config)

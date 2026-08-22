@@ -80,6 +80,26 @@ def test_generate_title_uses_atp_display_name_for_atp_reports() -> None:
 
     title = generate_title(report)
 
-    assert title == "ATP Top 10 Update \u2014 August 17, 2026"
+    assert title == "ATP Top 10 Rankings Update \u2014 August 17, 2026"
     assert "WTA" not in title
+
+
+def test_atp_title_uses_ranking_date_when_supplied() -> None:
+    report = _report(date(2026, 8, 17))
+    report.tour = "atp"
+    report.ranking_date = date(2026, 8, 18)
+
+    title = generate_title(report)
+
+    assert title == "ATP Top 10 Rankings Update \u2014 August 18, 2026"
+
+
+def test_atp_title_does_not_invent_a_ranking_date_when_unknown() -> None:
+    report = _report(date(2026, 8, 17))
+    report.tour = "atp"
+    report.ranking_date = None
+
+    title = generate_title(report)
+
+    assert title == "ATP Top 10 Rankings Update \u2014 August 17, 2026"
 

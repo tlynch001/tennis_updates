@@ -5,10 +5,12 @@ descriptions, narration, graphics attribution) asks a :class:`TourProfile`
 for wording instead of hard-coding WTA strings or branching on the raw
 tour key.
 
-This is **presentation only**. Rankings and match providers stay independently
-configured; an ATP profile does not imply ATP data support exists. Combining
+This is **presentation and product capability**, not a data-source selector.
+Rankings and match providers stay independently configured. Combining
 ``tour: atp`` with a WTA-only provider is rejected so an ATP-branded video
-cannot silently show WTA players.
+cannot silently show WTA players. ATP v1 is a rankings-only product
+(``supports_daily_matches`` / ``supports_tournament_status`` are false);
+WTA remains a daily match show.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from wta_daily.exceptions import ConfigurationError
 #: Provider plugin names that currently fetch WTA data only.
 #: ``wta_official`` is the official WTA JSON backend; ``api_tennis`` hard-codes
 #: ``event_type="WTA"`` standings. Used only to refuse ATP-branded runs that
-#: would still load WTA players. Neither is ATP-aware yet.
+#: would still load WTA players. ATP rankings use ``balldontlie_atp``.
 WTA_ONLY_PROVIDER_NAMES = frozenset({"wta_official", "api_tennis"})
 
 #: ``best_of`` with no ``sources`` list uses this mix (see
@@ -47,6 +49,14 @@ class TourProfile:
     ranking_body: str
     attribution: str
     git_commit_message_template: str
+    #: When false, the pipeline does not fetch daily matches and narration
+    #: must not treat a missing match as "did not play." ATP v1 is
+    #: rankings-only; WTA remains a daily match show.
+    supports_daily_matches: bool
+    #: When false, tournament elimination/champion/points-earned context is
+    #: not part of the product. Independent of match lookup so a future
+    #: match-capable tour can still opt out of this narration.
+    supports_tournament_status: bool
 
     @property
     def subject_cap(self) -> str:
@@ -83,6 +93,8 @@ WTA = TourProfile(
     ranking_body="the WTA",
     attribution="Data: WTA (api.wtatennis.com)  |  Generated automatically  |  wta-daily",
     git_commit_message_template="Daily WTA Update {date}",
+    supports_daily_matches=True,
+    supports_tournament_status=True,
 )
 
 ATP = TourProfile(
@@ -94,9 +106,10 @@ ATP = TourProfile(
     object="him",
     possessive="his",
     ranking_body="the ATP",
-    # No ATP data provider ships yet - do not invent a rankings URL.
-    attribution="Generated automatically",
-    git_commit_message_template="Daily ATP Update {date}",
+    attribution="Rankings: BALLDONTLIE ATP API",
+    git_commit_message_template="ATP rankings update {date}",
+    supports_daily_matches=False,
+    supports_tournament_status=False,
 )
 
 _PROFILES: dict[str, TourProfile] = {WTA.key: WTA, ATP.key: ATP}
@@ -144,11 +157,11 @@ def assert_tour_providers_compatible(
 ) -> None:
     """Reject ATP (or any non-WTA tour) combined with WTA-only data plugins.
 
-    ``tour: wta`` is unrestricted. ``tour: atp`` with ``sample`` providers is
-    allowed for presentation tests; ``tour: atp`` with ``wta_official`` or
-    ``api_tennis`` (directly or as a ``best_of`` source, including the default
-    ``best_of`` list that includes ``wta_official``) is not, because that run
-    would brand WTA players as ATP.
+    ``tour: wta`` is unrestricted. ``tour: atp`` with ``balldontlie_atp`` /
+    ``none`` (or ``sample`` for presentation tests) is allowed; ``tour: atp``
+    with ``wta_official`` or ``api_tennis`` (directly or as a ``best_of``
+    source, including the default ``best_of`` list that includes
+    ``wta_official``) is not, because that run would brand WTA players as ATP.
     """
 
     profile = profile_for(tour)
@@ -167,7 +180,7 @@ def assert_tour_providers_compatible(
         return
     raise ConfigurationError(
         f"tour: {profile.key} cannot use WTA-only data providers ({', '.join(used)}). "
-        "That combination would brand WTA players as ATP. ATP data support is not "
-        "implemented; use tour: wta for production, or sample providers for "
-        "presentation tests."
+        "That combination would brand WTA players as ATP. For ATP v1 use "
+        "rankings_provider: balldontlie_atp and match_provider: none "
+        "(see config/config.atp.example.yaml)."
     )

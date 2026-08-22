@@ -40,16 +40,32 @@ _SPOTLIGHT_LABEL = "FEATURED PLAYER"
 
 
 def render_featured_card(
-    featured: FeaturedPlayerReport, output_path: Path, graphics: GraphicsConfig, *, top_n: int
+    featured: FeaturedPlayerReport,
+    output_path: Path,
+    graphics: GraphicsConfig,
+    *,
+    top_n: int,
+    supports_daily_matches: bool = True,
 ) -> Path:
     try:
-        return _render(featured, output_path, graphics, top_n=top_n)
+        return _render(
+            featured,
+            output_path,
+            graphics,
+            top_n=top_n,
+            supports_daily_matches=supports_daily_matches,
+        )
     except Exception as exc:  # noqa: BLE001
         raise GraphicsError(f"Failed to render featured-player card for {featured.name}: {exc}") from exc
 
 
 def _render(
-    featured: FeaturedPlayerReport, output_path: Path, graphics: GraphicsConfig, *, top_n: int
+    featured: FeaturedPlayerReport,
+    output_path: Path,
+    graphics: GraphicsConfig,
+    *,
+    top_n: int,
+    supports_daily_matches: bool = True,
 ) -> Path:
     theme = graphics.theme
     width, height = graphics.width, graphics.height
@@ -225,9 +241,14 @@ def _render(
             anchor="la",
         )
     else:
-        message = "Did not play yesterday."
-        if featured.match_error:
-            message = "Match data unavailable today."
+        if not supports_daily_matches and featured.points is not None:
+            message = f"{featured.points:,} ranking points"
+        elif not supports_daily_matches:
+            message = "Ranking points unavailable."
+        else:
+            message = "Did not play yesterday."
+            if featured.match_error:
+                message = "Match data unavailable today."
         draw.text(
             (margin * 1.6, panel_top + height * 0.10),
             message,

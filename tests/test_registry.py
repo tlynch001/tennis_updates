@@ -66,8 +66,10 @@ def test_builtin_plugins_are_all_registered() -> None:
 
     assert "wta_official" in rankings_registry.available()
     assert "sample" in rankings_registry.available()
+    assert "balldontlie_atp" in rankings_registry.available()
     assert "wta_official" in matches_registry.available()
     assert "sample" in matches_registry.available()
+    assert "none" in matches_registry.available()
     assert "template" in script_registry.available()
     assert "openai" in script_registry.available()
     assert "pillow" in graphics_registry.available()

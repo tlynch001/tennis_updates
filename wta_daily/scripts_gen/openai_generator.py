@@ -149,6 +149,16 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "Emma earned 65 ranking points...' over '...She earned 65 ranking points...')."
 )
 
+#: Appended only when TourProfile.supports_daily_matches is false. The WTA
+#: daily-show system prompt above stays byte-identical.
+_RANKINGS_ONLY_SYSTEM_ADDENDUM = (
+    " This is a rankings-only update, not a daily match show. Do not mention "
+    "matches, opponents, scores, eliminations, champions, or that a player "
+    "'did not play yesterday'. Focus on rank, ranking points, movement, Top N "
+    "changes, and the official ranking-list date when it is given. End with a "
+    "sign-off that does not promise a daily return tomorrow."
+)
+
 
 def _system_prompt(profile: TourProfile) -> str:
     """LLM system prompt for ``profile``.
@@ -162,6 +172,19 @@ def _system_prompt(profile: TourProfile) -> str:
         object=profile.object,
         possessive=profile.possessive,
     )
+
+
+def _openai_system_prompt(profile: TourProfile) -> str:
+    """System prompt sent to OpenAI, including rankings-only guidance when needed.
+
+    :func:`_system_prompt` itself is left unchanged so WTA tests that assert
+    the daily-show wording stay byte-identical.
+    """
+
+    prompt = _system_prompt(profile)
+    if not profile.supports_daily_matches:
+        prompt += _RANKINGS_ONLY_SYSTEM_ADDENDUM
+    return prompt
 
 
 def _tournament_status_line(
@@ -239,7 +262,9 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             f"at roughly {config.words_per_minute} words per minute."
         ),
     ]
-    if target_date is not None:
+    if report.ranking_date is not None and not profile.supports_daily_matches:
+        lines.append(f"Official ranking-list date: {report.ranking_date.isoformat()}.")
+    if profile.supports_daily_matches and target_date is not None:
         lines.append(
             f"Match target date: {target_date.isoformat()} - every 'Latest match' below is "
             f"confirmed to have been completed on this date, or is explicitly absent if the "
@@ -247,6 +272,13 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
         )
     lines.extend(["", "Players, ranked 1..N:"])
     for player in report.players:
+        if not profile.supports_daily_matches:
+            lines.append(
+                f"- Rank {player.rank} (movement: {player.movement.value}, "
+                f"previous rank: {player.previous_rank}): {player.name}, "
+                f"{player.points} ranking points."
+            )
+            continue
         match_desc = "no completed match to report"
         if player.match is not None:
             match_desc = _match_description(player.match)
@@ -271,6 +303,12 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             lines.append(
                 f"- {featured.name}: current rank unavailable this run "
                 f"({featured.rank_error or 'no reason given'}) - omit the segment entirely."
+            )
+        elif not profile.supports_daily_matches:
+            lines.append(
+                f"- {featured.name}: rank {featured.rank} (movement: "
+                f"{featured.movement.value if featured.movement else 'unknown'}, previous rank: "
+                f"{featured.previous_rank}), {featured.points} ranking points."
             )
         else:
             match_desc = "no completed match to report"
@@ -325,7 +363,7 @@ class OpenAIScriptGenerator(ScriptGenerator):
         payload = {
             "model": self._config.openai_model,
             "messages": [
-                {"role": "system", "content": _system_prompt(profile_for(report.tour))},
+                {"role": "system", "content": _openai_system_prompt(profile_for(report.tour))},
                 {"role": "user", "content": _build_user_prompt(report, self._config)},
             ],
             "temperature": 0.7,

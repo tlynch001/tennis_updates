@@ -114,9 +114,15 @@ class DailyPipeline:
 
     def run(self, report_date: date | None = None) -> DailyReport:
         report_date = report_date or date.today()
+        run_label = (
+            "Daily pipeline"
+            if self._config.tour_profile.supports_daily_matches
+            else "rankings pipeline"
+        )
         logger.info(
-            "=== %s Daily pipeline starting for %s ===",
+            "=== %s %s starting for %s ===",
             self._config.tour_profile.display_name,
+            run_label,
             report_date.isoformat(),
         )
         api_usage.reset()
@@ -269,24 +275,36 @@ class DailyPipeline:
         if self._config.featured_player.enabled:
             featured_ranking, featured_rank_error = self._safe_resolve_featured_player_ranking(pool)
 
-        match_target_date = report_date - timedelta(days=self._config.match_target_date_offset_days)
-        logger.info("Downloading matches completed on %s...", match_target_date.isoformat())
-        logger.debug(
-            "Processing daily match activity separately from official rankings - "
-            "match results affect narration only, never rank/points/movement."
-        )
-        match_batch = list(rankings)
-        tracked_ids = {r.player_id for r in rankings}
-        if featured_ranking is not None and featured_ranking.player_id not in tracked_ids:
-            match_batch.append(featured_ranking)
-        matches_by_player, tournament_status_by_player, batch_error = self._safe_get_matches_for_date(
-            match_batch, match_target_date
-        )
-        if batch_error:
-            logger.warning(
-                "Could not confirm match data for %s - every player below will show "
-                "played: false with a match_error rather than a guess.",
-                match_target_date.isoformat(),
+        tour_profile = self._config.tour_profile
+        match_target_date: date | None = None
+        matches_by_player: dict[str, MatchResult] = {}
+        tournament_status_by_player: dict[str, TournamentRunStatus] = {}
+        batch_error: str | None = None
+        if tour_profile.supports_daily_matches:
+            match_target_date = report_date - timedelta(days=self._config.match_target_date_offset_days)
+            logger.info("Downloading matches completed on %s...", match_target_date.isoformat())
+            logger.debug(
+                "Processing daily match activity separately from official rankings - "
+                "match results affect narration only, never rank/points/movement."
+            )
+            match_batch = list(rankings)
+            tracked_ids = {r.player_id for r in rankings}
+            if featured_ranking is not None and featured_ranking.player_id not in tracked_ids:
+                match_batch.append(featured_ranking)
+            matches_by_player, tournament_status_by_player, batch_error = (
+                self._safe_get_matches_for_date(match_batch, match_target_date)
+            )
+            if batch_error:
+                logger.warning(
+                    "Could not confirm match data for %s - every player below will show "
+                    "played: false with a match_error rather than a guess.",
+                    match_target_date.isoformat(),
+                )
+        else:
+            logger.info(
+                "%s is rankings-only; skipping match lookup "
+                "(match status is not part of this product).",
+                tour_profile.display_name,
             )
 
         players: list[PlayerReport] = []
@@ -301,11 +319,13 @@ class DailyPipeline:
                 same_official_ranking_list=same_official_ranking_list,
             )
             match = matches_by_player.get(ranking.player_id)
-            if match is None:
+            if tour_profile.supports_daily_matches and match is None:
                 logger.info("%s did not play on %s.", ranking.name, match_target_date.isoformat())
-            tournament_status = self._resolve_tournament_status(
-                ranking.player_id, report_date.year, tournament_status_by_player
-            )
+            tournament_status = None
+            if tour_profile.supports_tournament_status:
+                tournament_status = self._resolve_tournament_status(
+                    ranking.player_id, report_date.year, tournament_status_by_player
+                )
             players.append(
                 PlayerReport(
                     rank=ranking.rank,
@@ -568,7 +588,10 @@ class DailyPipeline:
         for player in report.players:
             try:
                 self._graphics_renderer.render_player_card(
-                    player, store.player_cards_dir, top_n=self._config.top_n
+                    player,
+                    store.player_cards_dir,
+                    top_n=self._config.top_n,
+                    supports_daily_matches=self._config.tour_profile.supports_daily_matches,
                 )
             except GraphicsError as exc:
                 logger.error("Player card rendering failed for %s: %s", player.name, exc)
@@ -591,7 +614,10 @@ class DailyPipeline:
             return
         try:
             self._graphics_renderer.render_featured_card(
-                featured, store.featured_card_path, top_n=self._config.top_n
+                featured,
+                store.featured_card_path,
+                top_n=self._config.top_n,
+                supports_daily_matches=self._config.tour_profile.supports_daily_matches,
             )
             logger.info("Rendered %s", store.featured_card_path)
         except GraphicsError as exc:

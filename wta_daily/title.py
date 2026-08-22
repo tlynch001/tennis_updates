@@ -36,6 +36,13 @@ def generate_title(report: DailyReport) -> str:
       exactly the brief's required format, nothing more.
     """
 
+    profile = profile_for(report.tour)
     top_n = len(report.players)
-    date_str = f"{report.report_date:%B} {report.report_date.day}, {report.report_date.year}"
-    return f"{profile_for(report.tour).display_name} Top {top_n} Update {_EM_DASH} {date_str}"
+    product = f"{profile.display_name} Top {top_n} Update"
+    product_date = report.report_date
+    if not profile.supports_daily_matches:
+        product = f"{profile.display_name} Top {top_n} Rankings Update"
+        if report.ranking_date is not None:
+            product_date = report.ranking_date
+    date_str = f"{product_date:%B} {product_date.day}, {product_date.year}"
+    return f"{product} {_EM_DASH} {date_str}"

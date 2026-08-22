@@ -64,8 +64,18 @@ class TemplateScriptGenerator(ScriptGenerator):
     def generate(self, report: DailyReport) -> str:
         rng = random.Random(f"{report.report_date.isoformat()}:{report.tour}")
         n = len(report.players)
-        date_str = f"{report.report_date:%A, %B} {report.report_date.day}, {report.report_date.year}"
         profile = profile_for(report.tour)
+        title_date = (
+            report.ranking_date
+            if (not profile.supports_daily_matches and report.ranking_date is not None)
+            else report.report_date
+        )
+        date_str = f"{title_date:%A, %B} {title_date.day}, {title_date.year}"
+        unknown_pool = (
+            phrases.RANKINGS_ONLY_MOVEMENT_UNKNOWN
+            if not profile.supports_daily_matches
+            else phrases.MOVEMENT_UNKNOWN
+        )
 
         cyclers = {
             "connector": _PhraseCycler(phrases.CONNECTORS, rng),
@@ -74,7 +84,7 @@ class TemplateScriptGenerator(ScriptGenerator):
             "down": _PhraseCycler(phrases.MOVEMENT_DOWN, rng),
             "same": _PhraseCycler(phrases.MOVEMENT_SAME, rng),
             "new": _PhraseCycler(phrases.MOVEMENT_NEW, rng),
-            "unknown": _PhraseCycler(phrases.MOVEMENT_UNKNOWN, rng),
+            "unknown": _PhraseCycler(unknown_pool, rng),
             "win": _PhraseCycler(phrases.MATCH_WIN, rng),
             "win_no_round": _PhraseCycler(phrases.MATCH_WIN_NO_ROUND, rng),
             "loss": _PhraseCycler(phrases.MATCH_LOSS, rng),
@@ -89,7 +99,10 @@ class TemplateScriptGenerator(ScriptGenerator):
         # sign-off must always be the last thing spoken - see
         # _pad_to_target_length's docstring for the production bug this
         # ordering fixes.
-        body_paragraphs = [profile.format(rng.choice(phrases.OPENERS), n=n, date=date_str)]
+        opener_pool = (
+            phrases.RANKINGS_ONLY_OPENERS if not profile.supports_daily_matches else phrases.OPENERS
+        )
+        body_paragraphs = [profile.format(rng.choice(opener_pool), n=n, date=date_str)]
         for index, player in enumerate(report.players):
             body_paragraphs.append(
                 self._player_paragraph(player, report, index, n, cyclers, rng, profile)
@@ -111,7 +124,10 @@ class TemplateScriptGenerator(ScriptGenerator):
             else None
         )
 
-        closer = profile.format(rng.choice(phrases.CLOSERS), n=n)
+        closer_pool = (
+            phrases.RANKINGS_ONLY_CLOSERS if not profile.supports_daily_matches else phrases.CLOSERS
+        )
+        closer = profile.format(rng.choice(closer_pool), n=n)
         parts = [body]
         if segment:
             parts.append(segment)
@@ -152,6 +168,13 @@ class TemplateScriptGenerator(ScriptGenerator):
             sentence = f"{connector}{player.name} {movement_clause}"
         else:
             sentence = f"{player.name} {movement_clause}"
+
+        if not profile.supports_daily_matches:
+            sentence += f" with {player.points:,} ranking points."
+            extra = self._points_gap_sentence(player, report, index, cyclers, rng, profile)
+            if extra:
+                sentence += f" {extra}"
+            return sentence
 
         # Once we know a player's tournament run is already over
         # (eliminated or champion), a generic "no match to report"/
@@ -266,4 +289,9 @@ class TemplateScriptGenerator(ScriptGenerator):
         word_count = len(body.split())
         if word_count >= target_words:
             return body
-        return body + "\n\n" + profile.format(rng.choice(phrases.FIFTY_TWO_WEEK_NOTES))
+        note_pool = (
+            phrases.RANKINGS_ONLY_NOTES
+            if not profile.supports_daily_matches
+            else phrases.FIFTY_TWO_WEEK_NOTES
+        )
+        return body + "\n\n" + profile.format(rng.choice(note_pool))

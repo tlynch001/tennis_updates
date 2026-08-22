@@ -14,15 +14,19 @@ unconfirmed tournament) is simply omitted rather than guessed.
 from __future__ import annotations
 
 from wta_daily.models import DailyReport, FeaturedPlayerReport, Movement
-from wta_daily.tour import profile_for
+from wta_daily.tour import TourProfile, profile_for
 from wta_daily.tournament_context import most_relevant_tournament
 
 
 def generate_description(report: DailyReport) -> str:
+    profile = profile_for(report.tour)
+    if not profile.supports_daily_matches:
+        return _generate_rankings_update_description(report, profile)
+
     top_n = len(report.players)
     date_str = f"{report.report_date:%B} {report.report_date.day}, {report.report_date.year}"
     tournament = most_relevant_tournament(report)
-    tour = profile_for(report.tour).display_name
+    tour = profile.display_name
 
     lines: list[str] = [f"{tour} Top {top_n} Daily Update \u2014 {date_str}", ""]
 
@@ -45,6 +49,31 @@ def generate_description(report: DailyReport) -> str:
 
     lines.append(f"Follow along for daily {tour} Top {top_n} ranking and results updates.")
 
+    return "\n".join(lines).strip() + "\n"
+
+
+def _generate_rankings_update_description(report: DailyReport, profile: TourProfile) -> str:
+    """YouTube description for a rankings-only product (ATP v1).
+
+    Does not mention daily match activity, "did not play," or tournament
+    results. Uses the official ranking-list date when the provider supplied
+    one; otherwise the report date (never invents a list date).
+    """
+
+    top_n = len(report.players)
+    product_date = report.ranking_date or report.report_date
+    date_str = f"{product_date:%B} {product_date.day}, {product_date.year}"
+    tour = profile.display_name
+    lines = [
+        f"{tour} Top {top_n} Rankings Update \u2014 {date_str}",
+        "",
+        f"This rankings update covers the latest official {tour} Top {top_n}, "
+        "including ranking points and movement.",
+        "",
+    ]
+    lines.extend(f"{player.rank}. {player.name}" for player in report.players)
+    lines.append("")
+    lines.append(f"Follow along for {tour} Top {top_n} rankings updates.")
     return "\n".join(lines).strip() + "\n"
 
 

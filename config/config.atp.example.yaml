@@ -1,0 +1,73 @@
+# ATP v1 example configuration — weekly Top 10 rankings update.
+#
+# Safe for local testing: no match provider, no featured player, no
+# ElevenLabs, no video assembly, no YouTube publishing.
+#
+# Copy to config/config.atp.yaml (or pass this file directly) and put a
+# real BALLDONTLIE_API_KEY in your local .env — never in this file.
+#
+#   python -m wta_daily.cli --config config/config.atp.example.yaml
+#
+# See README.md's "ATP v1 (rankings-only)" section.
+
+tour: atp
+
+top_n: 10
+rankings_pool_size: 25
+
+# Isolated from the production WTA data/output/logs trees.
+data_dir: data/atp
+output_dir: output/atp
+log_dir: logs/atp
+
+rankings_provider:
+  provider: balldontlie_atp
+  # api_key_env: BALLDONTLIE_API_KEY   # resolved from the environment/.env
+
+# ATP v1 has no match feed. `none` disables lookup so a missing match is
+# "not part of this product," not "did not play yesterday."
+match_provider:
+  provider: none
+
+rankings:
+  projected_rankings_enabled: false
+
+tournament_status:
+  enabled: false
+
+featured_player:
+  enabled: false
+
+network:
+  timeout_seconds: 15
+  max_retries: 3
+  backoff_factor: 1.5
+  user_agent: "wta-daily/0.1 (+https://github.com/your-org/wta-daily)"
+
+script:
+  generator: template
+  target_minutes_low: 5
+  target_minutes_high: 8
+  words_per_minute: 150
+
+graphics:
+  renderer: pillow
+  width: 1920
+  height: 1080
+
+voice:
+  enabled: false
+
+video:
+  enabled: false
+
+git:
+  auto_commit: false
+  auto_push: false
+
+publishing:
+  thumbnail_enabled: true
+  description_enabled: true
+
+youtube:
+  enabled: false

@@ -183,3 +183,35 @@ FIFTY_TWO_WEEK_NOTES: list[str] = [
     "As always, today's points reflect fifty-two weeks of results - the next official "
     "rankings, whenever they're released, are where this week's matches will actually count.",
 ]
+
+#: Rankings-only product (see TourProfile.supports_daily_matches). Not used
+#: for the WTA daily show - those strings stay in OPENERS/CLOSERS above.
+RANKINGS_ONLY_OPENERS: list[str] = [
+    "Welcome to the {tour} Top {n} Rankings Update for {date}.",
+    "Hello and welcome to the {tour} Top {n} Rankings Update, covering the official list for {date}.",
+    "It's time for the {tour} Top {n} Rankings Update for {date}.",
+    "Good day, tennis fans, and welcome to the {tour} Top {n} Rankings Update for {date}.",
+]
+
+RANKINGS_ONLY_CLOSERS: list[str] = [
+    "That's the latest official {tour} Top {n}. Thanks for watching.",
+    "That wraps up this {tour} rankings update. We'll be back when the next official list is published.",
+    "And that's a look at the {tour} Top {n} rankings. Thanks for watching.",
+    "That's the Top {n} in the books. Stay tuned for the next official {tour} ranking update.",
+]
+
+#: Neutral current-rank wording for a rankings-only report with no previous
+#: snapshot. Avoids the daily-show "today" phrasing in MOVEMENT_UNKNOWN.
+RANKINGS_ONLY_MOVEMENT_UNKNOWN: list[str] = [
+    "sits at number {rank} in the latest rankings",
+    "is ranked number {rank}",
+    "comes in at number {rank}",
+    "holds down the number {rank} spot",
+]
+
+#: Optional length padding for rankings-only scripts - no match activity.
+RANKINGS_ONLY_NOTES: list[str] = [
+    "These official rankings reflect a rolling fifty-two-week window and update weekly.",
+    "Ranking points here are the official published totals, not a live in-tournament estimate.",
+    "The official {tour} list stays unchanged until the next ranking publication.",
+]
