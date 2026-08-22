@@ -7,9 +7,9 @@
 # Which tour to track. Selects a TourProfile (display name, pronouns, titles,
 # narration branding, attribution). Production rankings/match providers stay
 # independently configured and WTA-specific: `tour: atp` with `wta_official`
-# (directly or as a `best_of` source) is rejected so an ATP-branded video
-# cannot silently show WTA players. ATP data support is not implemented;
-# keep `tour: wta` for production.
+# or `api_tennis` (directly or as a `best_of` source) is rejected so an
+# ATP-branded video cannot silently show WTA players. ATP data support is
+# not implemented; keep `tour: wta` for production.
 tour: wta
 
 # How many players to track (the brief's "Top 10", but flip to 25 any time).

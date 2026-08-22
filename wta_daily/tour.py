@@ -18,9 +18,11 @@ from typing import Any
 
 from wta_daily.exceptions import ConfigurationError
 
-#: Provider plugin names that fetch WTA data (official WTA JSON backend).
-#: Used only to refuse ATP-branded runs that would still load WTA players.
-WTA_ONLY_PROVIDER_NAMES = frozenset({"wta_official"})
+#: Provider plugin names that currently fetch WTA data only.
+#: ``wta_official`` is the official WTA JSON backend; ``api_tennis`` hard-codes
+#: ``event_type="WTA"`` standings. Used only to refuse ATP-branded runs that
+#: would still load WTA players. Neither is ATP-aware yet.
+WTA_ONLY_PROVIDER_NAMES = frozenset({"wta_official", "api_tennis"})
 
 #: ``best_of`` with no ``sources`` list uses this mix (see
 #: :mod:`wta_daily.plugins.matches.best_of`); it includes ``wta_official``.
@@ -143,9 +145,10 @@ def assert_tour_providers_compatible(
     """Reject ATP (or any non-WTA tour) combined with WTA-only data plugins.
 
     ``tour: wta`` is unrestricted. ``tour: atp`` with ``sample`` providers is
-    allowed for presentation tests; ``tour: atp`` with ``wta_official``
-    (directly or as a ``best_of`` source, including the default source list)
-    is not, because that run would brand WTA players as ATP.
+    allowed for presentation tests; ``tour: atp`` with ``wta_official`` or
+    ``api_tennis`` (directly or as a ``best_of`` source, including the default
+    ``best_of`` list that includes ``wta_official``) is not, because that run
+    would brand WTA players as ATP.
     """
 
     profile = profile_for(tour)

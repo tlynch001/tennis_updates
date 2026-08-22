@@ -293,6 +293,50 @@ def test_atp_tour_with_best_of_default_sources_is_rejected(tmp_path: Path) -> No
         load_config(config_path)
 
 
+def test_atp_tour_with_api_tennis_match_provider_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_best_of_api_tennis_source_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: best_of\n"
+        "  sources:\n"
+        "    - provider: live_tennis_api\n"
+        "    - provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_wta_tour_with_api_tennis_match_provider_is_accepted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: wta\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tour == "wta"
+    assert config.match_provider.name == "api_tennis"
+
+
 def test_atp_tour_with_sample_providers_is_allowed_for_presentation(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

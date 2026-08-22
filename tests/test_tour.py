@@ -122,6 +122,14 @@ def test_wta_tour_is_compatible_with_wta_official_providers() -> None:
     )
 
 
+def test_wta_tour_is_compatible_with_api_tennis_match_provider() -> None:
+    assert_tour_providers_compatible(
+        "wta",
+        rankings_provider_name="wta_official",
+        match_provider_name="api_tennis",
+    )
+
+
 def test_atp_tour_with_sample_providers_is_allowed() -> None:
     assert_tour_providers_compatible(
         "atp",
@@ -179,8 +187,29 @@ def test_atp_tour_allows_best_of_without_wta_official_sources() -> None:
     )
 
 
-def test_wta_only_provider_names_are_the_official_wta_plugins() -> None:
-    assert WTA_ONLY_PROVIDER_NAMES == frozenset({"wta_official"})
+def test_atp_tour_rejects_api_tennis_match_provider() -> None:
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        assert_tour_providers_compatible(
+            "atp",
+            rankings_provider_name="sample",
+            match_provider_name="api_tennis",
+        )
+
+
+def test_atp_tour_rejects_best_of_explicit_api_tennis_source() -> None:
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        assert_tour_providers_compatible(
+            "atp",
+            rankings_provider_name="sample",
+            match_provider_name="best_of",
+            match_provider_options={
+                "sources": [{"provider": "live_tennis_api"}, {"provider": "api_tennis"}]
+            },
+        )
+
+
+def test_wta_only_provider_names_are_the_current_wta_plugins() -> None:
+    assert WTA_ONLY_PROVIDER_NAMES == frozenset({"wta_official", "api_tennis"})
 
 
 def test_tour_profile_is_frozen() -> None:
