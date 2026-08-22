@@ -17,7 +17,12 @@ from wta_daily.models import (
     TournamentRunStatus,
     TournamentState,
 )
-from wta_daily.scripts_gen.openai_generator import _build_user_prompt, _tournament_status_line
+from wta_daily.scripts_gen.openai_generator import (
+    _build_user_prompt,
+    _system_prompt,
+    _tournament_status_line,
+)
+from wta_daily.tour import ATP, WTA
 
 
 def _loss(*, opponent: str = "Some Rival") -> MatchResult:
@@ -214,3 +219,49 @@ def test_user_prompt_never_includes_a_raw_none_round() -> None:
 
     assert "(None," not in prompt
     assert "None," not in prompt
+
+
+def test_wta_system_prompt_is_unchanged_from_production() -> None:
+    prompt = _system_prompt(WTA)
+
+    assert "covering the WTA Top N rankings" in prompt
+    assert "at her rank" in prompt
+    assert "moves her to number X" in prompt
+    assert "NEXT official WTA ranking release" in prompt
+    assert "bare 'she'/'her'" in prompt
+    assert "ATP" not in prompt
+
+
+def test_atp_system_prompt_uses_atp_identity_and_male_pronouns() -> None:
+    prompt = _system_prompt(ATP)
+
+    assert "covering the ATP Top N rankings" in prompt
+    assert "at his rank" in prompt
+    assert "moves him to number X" in prompt
+    assert "NEXT official ATP ranking release" in prompt
+    assert "bare 'he'/'him'" in prompt
+    assert "WTA" not in prompt
+    assert "at her rank" not in prompt
+    assert "moves her to" not in prompt
+
+
+def test_atp_user_prompt_tournament_status_uses_male_object_pronoun() -> None:
+    player = _player(
+        tournament_status=TournamentRunStatus(
+            state=TournamentState.ELIMINATED,
+            round_reached="R16",
+            round_label="the Round of 16",
+            eliminated_by="Some Rival",
+            is_new_development=True,
+        ),
+        match=_loss(),
+    )
+    report = DailyReport(report_date=date(2026, 8, 19), tour="atp", players=[player])
+
+    prompt = _build_user_prompt(report, ScriptConfig())
+
+    assert "Tour: ATP" in prompt
+    assert "narrating for him" in prompt
+    assert "narrating for her" not in prompt
+    assert "WTA" not in prompt
+

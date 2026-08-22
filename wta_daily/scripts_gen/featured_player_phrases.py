@@ -68,10 +68,10 @@ AMERICA_FAVORITE_PURSUIT: list[str] = [
     "we're treating that ranking as strictly temporary",
     "the comeback campaign rolls on",
     "we're keeping a seat warm in the Top {n} regardless",
-    "another step on the way back to where she belongs",
+    "another step on the way back to where {subject} belongs",
     "the case for a return to the Top {n} keeps building",
     "there's still ground to make up before the Top {n}, but we'll be watching the climb",
-    "still some climbing to do before she's back in the Top {n}",
+    "still some climbing to do before {subject}'s back in the Top {n}",
     "naturally, this program has higher expectations",
     "this program remains considerably more optimistic than the rankings",
     "the rankings will catch up eventually, as far as this program's concerned",
@@ -85,7 +85,7 @@ AMERICA_FAVORITE_ARRIVED: list[str] = [
     "the Top {n} has recognized what we've known all along",
     "official confirmation of what this program has been saying for a while now",
     "the rest of the Top {n} has some company it should get used to",
-    "no longer a prediction - she's actually there",
+    "no longer a prediction - {subject}'s actually there",
     "the Top {n} welcomes a name that's been overdue for a while",
 ]
 
@@ -95,7 +95,7 @@ AMERICA_FAVORITE_ARRIVED: list[str] = [
 AMERICA_FAVORITE_NUMBER_ONE: list[str] = [
     "for once, our biased ranking and the official one are in perfect agreement",
     "the unofficial and the official rankings have finally become the same thing",
-    "there's no punchline left to make here - she's simply the best in the world",
+    "there's no punchline left to make here - {subject}'s simply the best in the world",
     "we'd normally make a joke about this, but the actual result speaks for itself",
     "the only ranking that ever mattered around here is now also the real one",
 ]
@@ -106,10 +106,10 @@ AMERICA_FAVORITE_NUMBER_ONE: list[str] = [
 AMERICA_FAVORITE_HEARTS: list[str] = [
     "officially number {rank}, unofficially number one around here",
     "the computer may say {rank}; our rankings remain unchanged",
-    "number {rank} according to the WTA, number one according to an extremely biased editorial board",  # noqa: E501
+    "number {rank} according to {ranking_body}, number one according to an extremely biased editorial board",  # noqa: E501
     "still holding the only ranking that actually matters around here",
     "number {rank} on paper, number one in spirit",
-    "the WTA has her at {rank}; we have her exactly where we've always had her",
+    "{ranking_body} has {object} at {rank}; we have {object} exactly where we've always had {object}",
 ]
 
 #: Movement-flavored fragments - the same up/down/same/new/unknown

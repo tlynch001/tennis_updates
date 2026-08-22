@@ -14,6 +14,7 @@ from wta_daily.models import (
 )
 from wta_daily.scripts_gen import phrases
 from wta_daily.scripts_gen.template_generator import TemplateScriptGenerator
+from wta_daily.tour import WTA
 
 
 def _sample_report(movements: list[Movement]) -> DailyReport:
@@ -126,7 +127,7 @@ def test_sign_off_is_the_actual_last_paragraph() -> None:
     script = TemplateScriptGenerator().generate(report)
 
     last_paragraph = _last_nonblank_paragraph(script)
-    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    possible_closers = {WTA.format(c, n=len(report.players)) for c in phrases.CLOSERS}
     assert last_paragraph in possible_closers
 
 
@@ -139,7 +140,7 @@ def test_sign_off_is_last_even_when_padding_is_added() -> None:
 
     assert "fifty-two weeks" in script
     last_paragraph = _last_nonblank_paragraph(script)
-    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    possible_closers = {WTA.format(c, n=len(report.players)) for c in phrases.CLOSERS}
     assert last_paragraph in possible_closers
     # The filler text must appear strictly before the sign-off in the script.
     assert script.index("fifty-two weeks") < script.index(last_paragraph)
@@ -421,8 +422,9 @@ def test_fifty_two_week_filler_wording_varies_across_days() -> None:
         )
         script = TemplateScriptGenerator(script_config=config).generate(dated_report)
         for note in phrases.FIFTY_TWO_WEEK_NOTES:
-            if note in script:
-                variants_seen.add(note)
+            formatted = WTA.format(note)
+            if formatted in script:
+                variants_seen.add(formatted)
 
     assert len(variants_seen) >= 2
 
@@ -465,7 +467,7 @@ def test_featured_player_segment_appears_after_top_n_and_before_sign_off() -> No
         player_paragraph_index = next(i for i, p in enumerate(paragraphs) if player.name in p)
         assert player_paragraph_index < emma_index
 
-    possible_closers = {c.format(n=len(report.players)) for c in phrases.CLOSERS}
+    possible_closers = {WTA.format(c, n=len(report.players)) for c in phrases.CLOSERS}
     assert paragraphs[closer_index] in possible_closers
 
 
@@ -764,3 +766,31 @@ def test_round_omitted_gracefully_when_it_cannot_be_normalized() -> None:
     assert "Main Draw Round" not in script
     assert "Amanda Anisimova" in script
     assert "Cincinnati" in script
+
+
+def test_wta_template_script_keeps_wta_branding_and_female_pronouns() -> None:
+    report = _sample_report([Movement.SAME, Movement.SAME])
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "WTA Top" in script
+    assert "after she " in script
+    assert "after he " not in script
+
+
+def test_atp_template_script_uses_atp_branding_and_male_pronouns() -> None:
+    report = _sample_report([Movement.SAME, Movement.SAME])
+    report.tour = "atp"
+
+    script = TemplateScriptGenerator().generate(report)
+
+    assert "ATP Top" in script
+    assert "WTA" not in script
+    assert "women's game" not in script
+    assert "after he " in script
+    assert "after she " not in script
+    padded = f" {script} "
+    assert " she " not in padded
+    assert " her " not in padded
+    assert " She's " not in padded
+    assert " she's " not in padded
+

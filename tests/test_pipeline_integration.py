@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from wta_daily.config import AppConfig, FeaturedPlayerConfig, GraphicsConfig, ProviderConfig
+from wta_daily.exceptions import ConfigurationError
 from wta_daily.models import (
     DailyReport,
     MatchLookupResult,
@@ -1362,3 +1363,35 @@ def test_featured_player_gets_tournament_status_context(tmp_path: Path) -> None:
 
     script = (config.output_dir / "2026-08-09" / "script.txt").read_text()
     assert "champion" in script.lower() or "title" in script.lower()
+
+
+def test_pipeline_rejects_atp_tour_with_wta_official_providers(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config.tour = "atp"
+    config.rankings_provider = ProviderConfig(name="wta_official")
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        DailyPipeline(config)
+
+
+def test_atp_sample_pipeline_writes_atp_branded_title_and_description(tmp_path: Path) -> None:
+    """Presentation-only: sample/fake rankings, no ATP API. Branding must
+    say ATP, never WTA."""
+
+    config = _make_config(tmp_path)
+    config.tour = "atp"
+    DailyPipeline(config).run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    title = (output_dir / "title.txt").read_text(encoding="utf-8").strip()
+    description = (output_dir / "youtube_description.txt").read_text(encoding="utf-8")
+    script = (output_dir / "script.txt").read_text(encoding="utf-8")
+
+    assert title == "ATP Top 5 Update \u2014 August 9, 2026"
+    assert "WTA" not in title
+    assert "ATP" in description
+    assert "WTA" not in description
+    assert "WTA" not in script
+    assert "after he " in script
+    assert "after she " not in script
+

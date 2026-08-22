@@ -14,6 +14,7 @@ unconfirmed tournament) is simply omitted rather than guessed.
 from __future__ import annotations
 
 from wta_daily.models import DailyReport, FeaturedPlayerReport, Movement
+from wta_daily.tour import profile_for
 from wta_daily.tournament_context import most_relevant_tournament
 
 
@@ -21,16 +22,17 @@ def generate_description(report: DailyReport) -> str:
     top_n = len(report.players)
     date_str = f"{report.report_date:%B} {report.report_date.day}, {report.report_date.year}"
     tournament = most_relevant_tournament(report)
+    tour = profile_for(report.tour).display_name
 
-    lines: list[str] = [f"WTA Top {top_n} Daily Update \u2014 {date_str}", ""]
+    lines: list[str] = [f"{tour} Top {top_n} Daily Update \u2014 {date_str}", ""]
 
     if tournament:
         lines.append(
-            f"Today's update covers the latest WTA Top {top_n} rankings and recent "
+            f"Today's update covers the latest {tour} Top {top_n} rankings and recent "
             f"results from {tournament}."
         )
     else:
-        lines.append(f"Today's update covers the latest WTA Top {top_n} rankings.")
+        lines.append(f"Today's update covers the latest {tour} Top {top_n} rankings.")
     lines.append("")
 
     lines.extend(f"{player.rank}. {player.name}" for player in report.players)
@@ -41,7 +43,7 @@ def generate_description(report: DailyReport) -> str:
         lines.append(_featured_summary(report.featured_player, top_n))
         lines.append("")
 
-    lines.append(f"Follow along for daily WTA Top {top_n} ranking and results updates.")
+    lines.append(f"Follow along for daily {tour} Top {top_n} ranking and results updates.")
 
     return "\n".join(lines).strip() + "\n"
 

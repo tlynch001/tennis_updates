@@ -72,3 +72,14 @@ def test_generate_title_contains_no_extra_content() -> None:
     for player in report.players:
         assert player.name not in title
     assert "#" not in title
+
+
+def test_generate_title_uses_atp_display_name_for_atp_reports() -> None:
+    report = _report(date(2026, 8, 17))
+    report.tour = "atp"
+
+    title = generate_title(report)
+
+    assert title == "ATP Top 10 Update \u2014 August 17, 2026"
+    assert "WTA" not in title
+

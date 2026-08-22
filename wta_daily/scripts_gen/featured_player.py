@@ -24,6 +24,7 @@ from wta_daily.scripts_gen.tournament_status_narration import (
     build_tournament_status_sentence,
     supersedes_inactivity_narration,
 )
+from wta_daily.tour import TourProfile, profile_for
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,13 @@ def _pick_unused_favorite_label(rng: random.Random, used: set[str]) -> str:
     return choice
 
 
-def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Random) -> str | None:
+def build_segment(
+    featured: FeaturedPlayerReport,
+    *,
+    top_n: int,
+    rng: random.Random,
+    profile: TourProfile | None = None,
+) -> str | None:
     """Return a short narration paragraph for ``featured``, or ``None``.
 
     Returns ``None`` whenever there isn't enough real information to say
@@ -106,6 +113,8 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     build a joke around a number it doesn't have, per the "never fabricate"
     rule that also governs the factual Top N coverage.
     """
+
+    resolved_profile = profile or profile_for("wta")
 
     if featured.tagline not in _KNOWN_TAGLINES:
         logger.warning(
@@ -133,11 +142,11 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     label = _pick_unused_favorite_label(rng, used_labels)
     intro_sentence = f"{intro} {label}, {featured.name}."
 
-    status_sentence = _status_sentence(featured, top_n, rng, name)
+    status_sentence = _status_sentence(featured, top_n, rng, name, resolved_profile)
 
     parts = [_finish(intro_sentence), _finish(status_sentence)]
 
-    match_sentence = _match_sentence(featured, top_n, rng, used_labels, name)
+    match_sentence = _match_sentence(featured, top_n, rng, used_labels, name, resolved_profile)
     if match_sentence:
         parts.append(_finish(match_sentence))
 
@@ -146,38 +155,58 @@ def build_segment(featured: FeaturedPlayerReport, *, top_n: int, rng: random.Ran
     # duplicated or Emma-specific version of this logic - so it reads
     # like a factual aside within her otherwise lighthearted segment.
     tournament_status_sentence = build_tournament_status_sentence(
-        featured.tournament_status, featured.name, rng, match=featured.match
+        featured.tournament_status,
+        featured.name,
+        rng,
+        match=featured.match,
+        profile=resolved_profile,
     )
     if tournament_status_sentence:
         parts.append(tournament_status_sentence)
 
     if featured.rank != 1 and rng.random() < _HEARTS_JOKE_PROBABILITY:
-        hearts = rng.choice(fp.AMERICA_FAVORITE_HEARTS).format(rank=featured.rank)
+        hearts = resolved_profile.format(
+            rng.choice(fp.AMERICA_FAVORITE_HEARTS), rank=featured.rank
+        )
         parts.append(_finish(f"And {hearts}"))
 
     return " ".join(parts)
 
 
-def _status_sentence(featured: FeaturedPlayerReport, top_n: int, rng: random.Random, name: str) -> str:
+def _status_sentence(
+    featured: FeaturedPlayerReport,
+    top_n: int,
+    rng: random.Random,
+    name: str,
+    profile: TourProfile,
+) -> str:
     assert featured.rank is not None  # guarded by build_segment
 
     if featured.rank == 1:
         tier_phrase = rng.choice(fp.AMERICA_FAVORITE_NUMBER_ONE)
-        return f"{name} sits at the very top of the rankings at world number one - {tier_phrase}"
+        return (
+            f"{name} sits at the very top of the rankings at world number one - "
+            f"{profile.format(tier_phrase)}"
+        )
 
     movement_pool = _MOVEMENT_FRAGMENTS.get(featured.movement, fp.AMERICA_FAVORITE_MOVEMENT_UNKNOWN)  # type: ignore[arg-type]
-    movement_fragment = rng.choice(movement_pool).format(rank=featured.rank)
+    movement_fragment = profile.format(rng.choice(movement_pool), rank=featured.rank)
 
     if featured.rank <= top_n:
-        tier_phrase = rng.choice(fp.AMERICA_FAVORITE_ARRIVED).format(n=top_n)
+        tier_phrase = profile.format(rng.choice(fp.AMERICA_FAVORITE_ARRIVED), n=top_n)
     else:
-        tier_phrase = rng.choice(fp.AMERICA_FAVORITE_PURSUIT).format(n=top_n)
+        tier_phrase = profile.format(rng.choice(fp.AMERICA_FAVORITE_PURSUIT), n=top_n)
 
     return f"{name} is {movement_fragment}, and {tier_phrase}"
 
 
 def _match_sentence(
-    featured: FeaturedPlayerReport, top_n: int, rng: random.Random, used_labels: set[str], name: str
+    featured: FeaturedPlayerReport,
+    top_n: int,
+    rng: random.Random,
+    used_labels: set[str],
+    name: str,
+    profile: TourProfile,
 ) -> str | None:
     # Once we know her tournament run is already over (eliminated or
     # champion), generic "had the day off"/"result couldn't be
@@ -197,13 +226,16 @@ def _match_sentence(
         if superseded:
             return None
         favorite = _pick_unused_favorite_label(rng, used_labels)
-        return rng.choice(fp.AMERICA_FAVORITE_NO_MATCH).format(favorite=favorite, name=name)
+        return profile.format(
+            rng.choice(fp.AMERICA_FAVORITE_NO_MATCH), favorite=favorite, name=name
+        )
 
     match = featured.match
     score = format_score_for_narration(match.score)
     if match.won:
         favorite = _pick_unused_favorite_label(rng, used_labels)
-        return rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_WIN, match.round)).format(
+        return profile.format(
+            rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_WIN, match.round)),
             favorite=favorite,
             name=name,
             opponent=match.opponent,
@@ -222,7 +254,8 @@ def _match_sentence(
     # capitalized and punctuated - rather than "...7-5,6-2. a temporary
     # setback..." running two sentences together with a lowercase start.
     base_favorite = _pick_unused_favorite_label(rng, used_labels)
-    base = rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_LOSS, match.round)).format(
+    base = profile.format(
+        rng.choice(_pool_for_round(fp.AMERICA_FAVORITE_LOSS, match.round)),
         favorite=base_favorite,
         name=name,
         opponent=match.opponent,
@@ -231,5 +264,7 @@ def _match_sentence(
         round=match.round,
     )
     support_favorite = _pick_unused_favorite_label(rng, used_labels)
-    support = rng.choice(fp.AMERICA_FAVORITE_LOSS_SUPPORT).format(favorite=support_favorite, n=top_n)
+    support = profile.format(
+        rng.choice(fp.AMERICA_FAVORITE_LOSS_SUPPORT), favorite=support_favorite, n=top_n
+    )
     return f"{_finish(base)} {_finish(support)}"

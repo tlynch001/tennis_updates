@@ -43,6 +43,7 @@ from wta_daily.models import MatchResult, TournamentRunStatus, TournamentState
 from wta_daily.rounds import round_rank
 from wta_daily.scripts_gen import tournament_status_phrases as tsp
 from wta_daily.scripts_gen.name_utils import first_name as _first_name
+from wta_daily.tour import TourProfile, profile_for
 
 #: States for which elimination/title context exists at all - see
 #: supersedes_inactivity_narration.
@@ -107,7 +108,9 @@ def _finish(sentence: str) -> str:
     return finished[:1].upper() + finished[1:] if finished else finished
 
 
-def _history_fragment(status: TournamentRunStatus, rng: random.Random) -> str | None:
+def _history_fragment(
+    status: TournamentRunStatus, rng: random.Random, profile: TourProfile
+) -> str | None:
     """A clause comparing this result with last year's at the same event -
     ``None`` if there's genuinely nothing reliable to compare against.
 
@@ -130,14 +133,14 @@ def _history_fragment(status: TournamentRunStatus, rng: random.Random) -> str | 
 
     defended_title = status.state is TournamentState.CHAMPION and status.previous_year_round == "W"
     if defended_title:
-        return rng.choice(tsp.HISTORY_DEFENDED_TITLE)
+        return profile.format(rng.choice(tsp.HISTORY_DEFENDED_TITLE))
     if this_rank > previous_rank:
         pool = tsp.HISTORY_IMPROVED
     elif this_rank == previous_rank:
         pool = tsp.HISTORY_MATCHED
     else:
         pool = tsp.HISTORY_WORSE
-    return rng.choice(pool).format(previous_round=status.previous_year_round_label)
+    return profile.format(rng.choice(pool), previous_round=status.previous_year_round_label)
 
 
 def _swing_fragment(points_delta: int | None, rng: random.Random) -> str:
@@ -157,32 +160,44 @@ def _swing_fragment(points_delta: int | None, rng: random.Random) -> str:
     return rng.choice(tsp.SWING_FLAT)
 
 
-def _points_and_history_sentence(status: TournamentRunStatus, name: str, rng: random.Random) -> str | None:
+def _points_and_history_sentence(
+    status: TournamentRunStatus, name: str, rng: random.Random, profile: TourProfile
+) -> str | None:
     """The second (optional) sentence: ranking points earned, with a
     natural historical comparison folded in when one's reliably known -
     ``None`` if there's nothing at all to say (no points, no history).
     """
 
-    history = _history_fragment(status, rng)
+    history = _history_fragment(status, rng, profile)
 
     if status.points_earned is None:
         if history is None:
             return None
-        return _finish(rng.choice(tsp.HISTORY_ONLY_SENTENCES).format(history=history))
+        return _finish(profile.format(rng.choice(tsp.HISTORY_ONLY_SENTENCES), history=history))
 
     if history is None:
-        base = rng.choice(tsp.POINTS_ONLY_SENTENCES).format(first_name=name, points=status.points_earned)
+        base = profile.format(
+            rng.choice(tsp.POINTS_ONLY_SENTENCES), first_name=name, points=status.points_earned
+        )
         return _finish(base)
 
     swing = _swing_fragment(status.points_delta, rng)
-    base = rng.choice(tsp.POINTS_WITH_HISTORY_SENTENCES).format(
-        first_name=name, points=status.points_earned, history=history
+    base = profile.format(
+        rng.choice(tsp.POINTS_WITH_HISTORY_SENTENCES),
+        first_name=name,
+        points=status.points_earned,
+        history=history,
     )
     return _finish(base + swing)
 
 
 def _eliminated_sentences(
-    status: TournamentRunStatus, name: str, rng: random.Random, *, just_now: bool
+    status: TournamentRunStatus,
+    name: str,
+    rng: random.Random,
+    profile: TourProfile,
+    *,
+    just_now: bool,
 ) -> list[str]:
     round_phrase = status.round_label or "the tournament"
 
@@ -198,17 +213,20 @@ def _eliminated_sentences(
             if status.tournament
             else tsp.ELIMINATED_JUST_NOW_NO_TOURNAMENT
         )
-        opening = rng.choice(pool).format(
-            first_name=name, round=round_phrase, tournament=status.tournament
+        opening = profile.format(
+            rng.choice(pool),
+            first_name=name,
+            round=round_phrase,
+            tournament=status.tournament,
         )
         sentences = [_finish(opening)]
-        points_history = _points_and_history_sentence(status, name, rng)
+        points_history = _points_and_history_sentence(status, name, rng, profile)
         if points_history:
             sentences.append(points_history)
         return sentences
 
     if not status.is_new_development:
-        base = rng.choice(tsp.ELIMINATED_BRIEF).format(first_name=name, round=round_phrase)
+        base = profile.format(rng.choice(tsp.ELIMINATED_BRIEF), first_name=name, round=round_phrase)
         return [_finish(base)]
 
     pool = (
@@ -216,17 +234,24 @@ def _eliminated_sentences(
         if status.eliminated_by
         else tsp.ELIMINATED_OPENING_NO_ELIMINATOR
     )
-    opening = rng.choice(pool).format(first_name=name, round=round_phrase, eliminated_by=status.eliminated_by)
+    opening = profile.format(
+        rng.choice(pool), first_name=name, round=round_phrase, eliminated_by=status.eliminated_by
+    )
     sentences = [_finish(opening)]
 
-    points_history = _points_and_history_sentence(status, name, rng)
+    points_history = _points_and_history_sentence(status, name, rng, profile)
     if points_history:
         sentences.append(points_history)
     return sentences
 
 
 def _champion_sentences(
-    status: TournamentRunStatus, name: str, rng: random.Random, *, just_now: bool
+    status: TournamentRunStatus,
+    name: str,
+    rng: random.Random,
+    profile: TourProfile,
+    *,
+    just_now: bool,
 ) -> list[str]:
     if just_now:
         pool = (
@@ -234,17 +259,23 @@ def _champion_sentences(
             if status.tournament
             else tsp.CHAMPION_JUST_NOW_NO_TOURNAMENT
         )
-        sentences = [_finish(rng.choice(pool).format(first_name=name, tournament=status.tournament))]
-        points_history = _points_and_history_sentence(status, name, rng)
+        sentences = [
+            _finish(
+                profile.format(
+                    rng.choice(pool), first_name=name, tournament=status.tournament
+                )
+            )
+        ]
+        points_history = _points_and_history_sentence(status, name, rng, profile)
         if points_history:
             sentences.append(points_history)
         return sentences
 
     if not status.is_new_development:
-        return [_finish(rng.choice(tsp.CHAMPION_BRIEF).format(first_name=name))]
+        return [_finish(profile.format(rng.choice(tsp.CHAMPION_BRIEF), first_name=name))]
 
-    sentences = [_finish(rng.choice(tsp.CHAMPION_OPENING).format(first_name=name))]
-    points_history = _points_and_history_sentence(status, name, rng)
+    sentences = [_finish(profile.format(rng.choice(tsp.CHAMPION_OPENING), first_name=name))]
+    points_history = _points_and_history_sentence(status, name, rng, profile)
     if points_history:
         sentences.append(points_history)
     return sentences
@@ -256,6 +287,7 @@ def build_tournament_status_sentence(
     rng: random.Random,
     *,
     match: MatchResult | None = None,
+    profile: TourProfile | None = None,
 ) -> str | None:
     """One or more ready-to-append, fully punctuated sentences for
     ``status`` (joined with spaces into a single string), or ``None``
@@ -290,10 +322,15 @@ def build_tournament_status_sentence(
 
     if status is None:
         return None
+    resolved_profile = profile or profile_for("wta")
     name = _first_name(full_name)
     just_now = is_result_of_reported_match(status, match)
     if status.state is TournamentState.ELIMINATED:
-        return " ".join(_eliminated_sentences(status, name, rng, just_now=just_now))
+        return " ".join(
+            _eliminated_sentences(status, name, rng, resolved_profile, just_now=just_now)
+        )
     if status.state is TournamentState.CHAMPION:
-        return " ".join(_champion_sentences(status, name, rng, just_now=just_now))
+        return " ".join(
+            _champion_sentences(status, name, rng, resolved_profile, just_now=just_now)
+        )
     return None

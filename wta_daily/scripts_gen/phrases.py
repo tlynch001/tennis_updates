@@ -7,16 +7,16 @@ for a different language) without touching the generator's control flow.
 from __future__ import annotations
 
 OPENERS: list[str] = [
-    "Welcome to today's WTA Top {n} Update for {date}.",
-    "Hello and welcome back to the WTA Top {n} Update, here's what's happening on tour for {date}.",
-    "It's time for your WTA Top {n} Update, bringing you up to speed for {date}.",
-    "Good day, tennis fans, and welcome to today's WTA Top {n} rundown for {date}.",
+    "Welcome to today's {tour} Top {n} Update for {date}.",
+    "Hello and welcome back to the {tour} Top {n} Update, here's what's happening on tour for {date}.",
+    "It's time for your {tour} Top {n} Update, bringing you up to speed for {date}.",
+    "Good day, tennis fans, and welcome to today's {tour} Top {n} rundown for {date}.",
 ]
 
 CLOSERS: list[str] = [
-    "That's everything you need to know from the top of the women's game today. We'll be back tomorrow with the latest.",  # noqa: E501
-    "That wraps up today's update. Join us again tomorrow for the newest rankings and results from the WTA Tour.",  # noqa: E501
-    "And that's a look at the WTA Top {n} today. Thanks for watching, and we'll see you back here tomorrow.",
+    "That's everything you need to know from the top of the {game} today. We'll be back tomorrow with the latest.",  # noqa: E501
+    "That wraps up today's update. Join us again tomorrow for the newest rankings and results from the {tour_long}.",  # noqa: E501
+    "And that's a look at the {tour} Top {n} today. Thanks for watching, and we'll see you back here tomorrow.",  # noqa: E501
     "That's today's Top {n} in the books. Stay tuned for more as the tour rolls on.",
 ]
 
@@ -149,13 +149,13 @@ NO_MATCH: list[str] = [
 #: field every player's paragraph is required to report. Never implies the
 #: gap changed today; it's always the gap on the *current* official list.
 POINTS_GAP_TEMPLATES: list[str] = [
-    "That keeps her just {gap} points behind the player above her.",
-    "She now trails number {rank_above} by a slim {gap} points.",
-    "It's a tight gap of only {gap} points to the spot just above her.",
+    "That keeps {object} just {gap} points behind the player above {object}.",
+    "{subject_cap} now trails number {rank_above} by a slim {gap} points.",
+    "It's a tight gap of only {gap} points to the spot just above {object}.",
 ]
 
 #: An occasional, deliberately vague acknowledgment that a win *could*
-#: factor into the *next* official WTA ranking publication - never a
+#: factor into the *next* official ranking publication - never a
 #: specific projected rank/points claim (that's a separate, not-yet-built
 #: "projected ranking" feature - see the README's "Official ranking vs.
 #: daily match activity" section). Used selectively after a win (see
@@ -163,7 +163,7 @@ POINTS_GAP_TEMPLATES: list[str] = [
 #: every winning player every day, and never implies the *current*
 #: official ranking already reflects this result.
 NEXT_RANKING_NOTES: list[str] = [
-    "That result could help her case when the next official rankings are released.",
+    "That result could help {possessive} case when the next official rankings are released.",
     "It's exactly the sort of result that could matter once the next official list comes out.",
     "Results like that tend to add up by the time the next official rankings drop.",
     "That's the kind of win that could show up on the next official ranking update.",
@@ -177,9 +177,9 @@ NEXT_RANKING_NOTES: list[str] = [
 #: update automatically once a tournament ends.
 FIFTY_TWO_WEEK_NOTES: list[str] = [
     "As always, ranking points reflect results over the last fifty-two weeks. This week's "
-    "matches can affect the picture when the next official WTA rankings are released.",
+    "matches can affect the picture when the next official {tour} rankings are released.",
     "A quick reminder: these rankings reflect a rolling fifty-two-week window. Nothing "
-    "changes officially until the next scheduled WTA ranking update.",
+    "changes officially until the next scheduled {tour} ranking update.",
     "As always, today's points reflect fifty-two weeks of results - the next official "
     "rankings, whenever they're released, are where this week's matches will actually count.",
 ]

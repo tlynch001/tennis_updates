@@ -239,3 +239,129 @@ def test_voice_config_requires_env_var_when_enabled(tmp_path: Path, monkeypatch:
 
     monkeypatch.setenv("MY_TEST_KEY", "secret-value")
     assert config.voice.resolve_api_key() == "secret-value"
+
+
+def test_example_config_remains_a_valid_wta_production_config() -> None:
+    config = load_config(Path("config/config.example.yaml"))
+
+    assert config.tour == "wta"
+    assert config.tour_profile.key == "wta"
+    assert config.tour_profile.display_name == "WTA"
+    assert config.rankings_provider.name == "wta_official"
+    assert config.git.commit_message_template == "Daily WTA Update {date}"
+
+
+def test_unknown_tour_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("tour: itf\n", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="Unknown tour"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_default_wta_official_providers_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("tour: atp\n", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_explicit_wta_official_rankings_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: wta_official\n"
+        "match_provider:\n  provider: sample\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_best_of_default_sources_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: best_of\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_api_tennis_match_provider_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_atp_tour_with_best_of_api_tennis_source_is_rejected(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: best_of\n"
+        "  sources:\n"
+        "    - provider: live_tennis_api\n"
+        "    - provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="WTA-only"):
+        load_config(config_path)
+
+
+def test_wta_tour_with_api_tennis_match_provider_is_accepted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: wta\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: api_tennis\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tour == "wta"
+    assert config.match_provider.name == "api_tennis"
+
+
+def test_atp_tour_with_sample_providers_is_allowed_for_presentation(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: sample\n"
+        "match_provider:\n  provider: sample\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tour == "atp"
+    assert config.tour_profile.display_name == "ATP"
+    assert config.tour_profile.subject == "he"
+    assert config.git.commit_message_template == "Daily ATP Update {date}"
+
+
+def test_wta_explicit_commit_template_is_unchanged(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'tour: wta\ngit:\n  commit_message_template: "Daily WTA Update {date}"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.git.commit_message_template == "Daily WTA Update {date}"
+

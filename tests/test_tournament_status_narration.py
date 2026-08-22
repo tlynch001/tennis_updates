@@ -12,6 +12,7 @@ from wta_daily.scripts_gen.tournament_status_narration import (
     is_result_of_reported_match,
     supersedes_inactivity_narration,
 )
+from wta_daily.tour import profile_for
 
 
 def _loss(*, opponent: str = "Some Rival") -> MatchResult:
@@ -647,3 +648,50 @@ def test_new_elimination_language_still_varies_across_seeds() -> None:
         for seed in range(30)
     }
     assert len(outputs) > 1
+
+
+def test_wta_elimination_narration_still_uses_her() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Marta Kostyuk",
+        is_new_development=True,
+    )
+
+    sentence = build_tournament_status_sentence(
+        status, "Mirra Andreeva", random.Random(0), match=_loss(opponent="Marta Kostyuk")
+    )
+
+    assert sentence is not None
+    assert " her " in f" {sentence} " or sentence.lower().startswith("her ")
+    assert " his " not in f" {sentence} "
+
+
+def test_atp_elimination_narration_uses_male_pronouns_not_wta_wording() -> None:
+    status = TournamentRunStatus(
+        state=TournamentState.ELIMINATED,
+        tournament="Cincinnati",
+        round_reached="R16",
+        round_label="the Round of 16",
+        eliminated_by="Some Rival",
+        is_new_development=True,
+    )
+    atp = profile_for("atp")
+
+    for seed in range(20):
+        sentence = build_tournament_status_sentence(
+            status,
+            "Jannik Sinner",
+            random.Random(seed),
+            match=_loss(),
+            profile=atp,
+        )
+        assert sentence is not None
+        lowered = f" {sentence.lower()} "
+        assert " her " not in lowered
+        assert " she " not in lowered
+        assert "WTA" not in sentence
+        assert " his " in lowered or " him " in lowered or " he " in lowered
+
