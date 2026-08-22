@@ -57,6 +57,10 @@ class TourProfile:
     #: not part of the product. Independent of match lookup so a future
     #: match-capable tour can still opt out of this narration.
     supports_tournament_status: bool
+    #: When true, narration is a weekly rankings update that emphasizes
+    #: movement since the previous stored snapshot (biggest movers,
+    #: Top N entrants/departures). WTA stays a daily match show.
+    emphasizes_weekly_ranking_movement: bool
 
     @property
     def subject_cap(self) -> str:
@@ -95,6 +99,7 @@ WTA = TourProfile(
     git_commit_message_template="Daily WTA Update {date}",
     supports_daily_matches=True,
     supports_tournament_status=True,
+    emphasizes_weekly_ranking_movement=False,
 )
 
 ATP = TourProfile(
@@ -110,6 +115,7 @@ ATP = TourProfile(
     git_commit_message_template="ATP rankings update {date}",
     supports_daily_matches=False,
     supports_tournament_status=False,
+    emphasizes_weekly_ranking_movement=True,
 )
 
 _PROFILES: dict[str, TourProfile] = {WTA.key: WTA, ATP.key: ATP}

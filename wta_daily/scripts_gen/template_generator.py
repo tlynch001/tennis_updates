@@ -62,9 +62,16 @@ class TemplateScriptGenerator(ScriptGenerator):
         self._config = script_config or ScriptConfig()
 
     def generate(self, report: DailyReport) -> str:
+        profile = profile_for(report.tour)
+        if profile.emphasizes_weekly_ranking_movement:
+            from wta_daily.scripts_gen.weekly_rankings_narration import (
+                generate_weekly_rankings_script,
+            )
+
+            return generate_weekly_rankings_script(report, self._config, profile)
+
         rng = random.Random(f"{report.report_date.isoformat()}:{report.tour}")
         n = len(report.players)
-        profile = profile_for(report.tour)
         title_date = (
             report.ranking_date
             if (not profile.supports_daily_matches and report.ranking_date is not None)

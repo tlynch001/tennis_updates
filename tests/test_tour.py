@@ -46,6 +46,7 @@ def test_wta_profile_reproduces_current_production_presentation() -> None:
     assert WTA.git_commit_message_template == "Daily WTA Update {date}"
     assert WTA.supports_daily_matches is True
     assert WTA.supports_tournament_status is True
+    assert WTA.emphasizes_weekly_ranking_movement is False
 
 
 def test_atp_profile_is_presentation_only() -> None:
@@ -64,6 +65,7 @@ def test_atp_profile_is_presentation_only() -> None:
     assert ATP.git_commit_message_template == "ATP rankings update {date}"
     assert ATP.supports_daily_matches is False
     assert ATP.supports_tournament_status is False
+    assert ATP.emphasizes_weekly_ranking_movement is True
 
 
 def test_wta_phrase_formatting_keeps_production_wording() -> None:

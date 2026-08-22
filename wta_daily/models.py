@@ -529,6 +529,37 @@ class FeaturedPlayerReport:
         )
 
 
+@dataclass(frozen=True)
+class RankingsDeparture:
+    """A player who was in the previous tracked Top N snapshot and is not
+    in this report's Top N.
+
+    Built only from the stored previous snapshot — never from extra API
+    fetches or career history. ``previous_rank`` is their rank on that
+    snapshot. Used by weekly rankings narration; daily-match tours leave
+    the report list empty.
+    """
+
+    name: str
+    player_id: str
+    previous_rank: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "player_id": self.player_id,
+            "previous_rank": self.previous_rank,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RankingsDeparture:
+        return cls(
+            name=str(data["name"]),
+            player_id=str(data["player_id"]),
+            previous_rank=int(data["previous_rank"]),
+        )
+
+
 @dataclass
 class DailyReport:
     """The complete, self-contained result of one day's pipeline run.
@@ -563,9 +594,14 @@ class DailyReport:
     #: the WTA actually publishes a new one, which is exactly the point -
     #: see the README's "Official ranking vs. daily match activity" section.
     ranking_date: date | None = None
+    #: Players who left the tracked Top N since the previous snapshot.
+    #: Empty when there is no previous snapshot or the tour does not
+    #: emphasize weekly ranking movement. Omitted from ``to_dict`` when
+    #: empty so existing WTA ``report.json`` keys stay unchanged.
+    departed_players: list[RankingsDeparture] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "date": self.report_date.isoformat(),
             "tour": self.tour,
             "match_target_date": (
@@ -576,12 +612,16 @@ class DailyReport:
             "featured_player": self.featured_player.to_dict() if self.featured_player else None,
             "errors": self.errors,
         }
+        if self.departed_players:
+            data["departed_players"] = [d.to_dict() for d in self.departed_players]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DailyReport:
         raw_target_date = data.get("match_target_date")
         raw_ranking_date = data.get("ranking_date")
         raw_featured_player = data.get("featured_player")
+        raw_departed = data.get("departed_players") or []
         return cls(
             report_date=date.fromisoformat(data["date"]),
             tour=data.get("tour", "wta"),
@@ -592,4 +632,5 @@ class DailyReport:
             featured_player=(
                 FeaturedPlayerReport.from_dict(raw_featured_player) if raw_featured_player else None
             ),
+            departed_players=[RankingsDeparture.from_dict(item) for item in raw_departed],
         )
