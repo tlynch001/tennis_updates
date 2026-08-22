@@ -1,6 +1,6 @@
 # ATP Data-Source Spike
 
-**Status:** research only. No ATP provider implementation, no production-behavior change, no points-table file, no persistence or narration edits.
+**Status:** research complete. ATP v1 providers now live in `api_tennis_atp` (see README "ATP v1"). This document remains the evidence record; it is not the implementation.
 
 **Research date:** 22 August 2026.
 

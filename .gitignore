@@ -23,8 +23,9 @@ env/
 secrets/*
 !secrets/.gitkeep
 
-# Local configuration copied from config.example.yaml
+# Local configuration copied from the example files
 config/config.yaml
+config/config.atp.yaml
 
 # Generated daily output folders (output/<YYYY-MM-DD>/) are intentionally
 # NOT ignored - the whole point of the "Git" workflow step is to commit them
@@ -33,6 +34,11 @@ config/config.yaml
 # Logs
 logs/*
 !logs/.gitkeep
+logs/atp/
+
+# ATP v1 local persistence/output (kept separate from WTA production paths)
+data/atp/
+output/atp/
 
 # Local provider caches (safe to regenerate)
 data/cache/*

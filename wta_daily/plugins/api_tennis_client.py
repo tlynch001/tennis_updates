@@ -51,10 +51,10 @@ class ApiTennisClient:
     ) -> None:
         if not api_key:
             raise ConfigurationError(
-                "api-tennis.com match provider is configured but no API key was found. "
-                "Set the environment variable named by match_provider.api_key_env "
+                "An api-tennis.com provider is configured but no API key was found. "
+                "Set the environment variable named by api_key_env "
                 "(default APITENNIS_KEY) - never put the key in config.yaml. See "
-                ".env.example and the README's 'Match-data reliability' section."
+                ".env.example and the README."
             )
         self._base_url = base_url
         self._http = HttpClient(network)
@@ -84,3 +84,25 @@ class ApiTennisClient:
         return self._call(
             "get_fixtures", player_key=player_key, date_start=date_start, date_stop=date_stop
         )
+
+    def get_fixtures_for_date(
+        self,
+        *,
+        date_start: str,
+        date_stop: str,
+        event_type_key: int | str | None = None,
+        timezone: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """``method=get_fixtures`` for a calendar window, without a per-player fan-out.
+
+        Used by the ATP match provider to retrieve one day's completed singles
+        in a single request. The existing :meth:`get_fixtures` path (WTA
+        ``api_tennis``) is unchanged and still requires ``player_key``.
+        """
+
+        params: dict[str, Any] = {"date_start": date_start, "date_stop": date_stop}
+        if event_type_key is not None:
+            params["event_type_key"] = event_type_key
+        if timezone:
+            params["timezone"] = timezone
+        return self._call("get_fixtures", **params)

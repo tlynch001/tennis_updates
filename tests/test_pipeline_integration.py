@@ -1374,6 +1374,158 @@ def test_pipeline_rejects_atp_tour_with_wta_official_providers(tmp_path: Path) -
         DailyPipeline(config)
 
 
+def test_atp_v1_pipeline_produces_report_from_mocked_api_tennis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline ATP v1 path: real ATP plugins, fixture vendor payloads.
+
+    Proves rankings + completed matches flow through the existing pipeline
+    into report/title/description/script/graphics without tournament-status
+    invention and without touching WTA data_dir/output_dir defaults.
+    """
+
+    standings = json.loads(
+        (Path(__file__).parent / "fixtures" / "api_tennis_atp" / "standings.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    fixtures = json.loads(
+        (Path(__file__).parent / "fixtures" / "api_tennis_atp" / "fixtures.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    monkeypatch.setenv("APITENNIS_KEY", "test_key_not_real")
+
+    config = AppConfig()
+    config.tour = "atp"
+    config.top_n = 10
+    config.rankings_pool_size = 10
+    config.data_dir = tmp_path / "data" / "atp"
+    config.output_dir = tmp_path / "output" / "atp"
+    config.log_dir = tmp_path / "logs" / "atp"
+    config.rankings_provider = ProviderConfig(name="api_tennis_atp")
+    config.match_provider = ProviderConfig(name="api_tennis_atp")
+    config.featured_player = FeaturedPlayerConfig(enabled=False)
+    config.tournament_status.enabled = False
+    config.graphics = GraphicsConfig(width=480, height=270)
+    config.voice.enabled = False
+    config.video.enabled = False
+    config.youtube.enabled = False
+
+    pipeline = DailyPipeline(config)
+    monkeypatch.setattr(
+        pipeline._rankings_provider._client, "get_standings", lambda event_type="WTA": standings
+    )
+    monkeypatch.setattr(
+        pipeline._match_provider._client,
+        "get_fixtures_for_date",
+        lambda **_kwargs: fixtures,
+    )
+
+    report = pipeline.run(date(2026, 8, 9))
+
+    output_dir = config.output_dir / "2026-08-09"
+    assert output_dir != tmp_path / "output" / "2026-08-09"
+    assert (output_dir / "report.json").exists()
+    assert (output_dir / "script.txt").exists()
+    assert (output_dir / "title.txt").exists()
+    assert (output_dir / "youtube_description.txt").exists()
+    assert (output_dir / "leaderboard.png").exists()
+    assert (output_dir / "thumbnail.png").exists()
+    for player in report.players:
+        assert (output_dir / "player_cards" / f"{player.rank:02d}.png").exists()
+
+    assert (config.data_dir / "rankings-history.json").exists()
+    assert not (tmp_path / "data" / "rankings-history.json").exists()
+
+    assert report.tour == "atp"
+    assert report.ranking_date is None
+    assert report.featured_player is None
+    assert len(report.players) == 10
+    assert report.errors == []
+    assert [p.player_id for p in report.players[:2]] == ["2072", "3105"]
+    assert report.players[0].name == "Jannik Sinner"
+    assert report.players[0].points == 13450
+    assert report.players[0].match is None
+    assert report.players[0].tournament_status is None
+    assert report.players[1].name == "Carlos Alcaraz"
+    assert report.players[1].match is not None
+    assert report.players[1].match.opponent == "A. Rublev"
+    assert report.players[1].match.won is True
+    assert report.players[1].tournament_status is None
+    assert all(p.tournament_status is None for p in report.players)
+
+    title = (output_dir / "title.txt").read_text(encoding="utf-8").strip()
+    description = (output_dir / "youtube_description.txt").read_text(encoding="utf-8")
+    script = (output_dir / "script.txt").read_text(encoding="utf-8")
+    payload = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+
+    assert title == "ATP Top 10 Update \u2014 August 9, 2026"
+    assert "WTA" not in title
+    assert "ATP" in description
+    assert "WTA" not in description
+    assert "WTA" not in script
+    assert "after he " in script
+    assert "after she " not in script
+    assert "did not play yesterday" in script or "was off yesterday" in script or "no result from yesterday" in script
+    assert "last year" not in script.lower()
+    assert "points earned" not in script.lower()
+    assert "still alive" not in script.lower()
+    assert "tournament points" not in script.lower()
+    assert payload["ranking_date"] is None
+    assert payload["featured_player"] is None
+    assert all(player.get("tournament_status") is None for player in payload["players"])
+
+
+def test_atp_pipeline_ignores_tournament_status_even_if_a_provider_returns_it(
+    tmp_path: Path,
+) -> None:
+    """ATP v1 capability boundary: do not attach WTA-style run status."""
+
+    class _StatusfulMatchProvider(MatchProvider):
+        def __init__(self, **_ignored: object) -> None:
+            pass
+
+        def get_latest_match(self, player: PlayerRanking):
+            return None
+
+        def get_matches_for_date(self, players, target_date):
+            return MatchLookupResult(
+                matches={
+                    players[0].player_id: MatchResult(
+                        opponent="Rival",
+                        tournament="Cincinnati",
+                        round="Quarterfinal",
+                        score="6-4 6-3",
+                        won=False,
+                        match_date=target_date,
+                    )
+                },
+                tournament_status={
+                    players[0].player_id: TournamentRunStatus(
+                        state=TournamentState.ELIMINATED,
+                        tournament="Cincinnati",
+                        round_reached="QF",
+                        eliminated_by="Rival",
+                        points_earned=180,
+                    )
+                },
+            )
+
+    matches_registry.register("atp-statusful-for-tests")(_StatusfulMatchProvider)
+    config = _make_config(tmp_path)
+    config.tour = "atp"
+    config.match_provider = ProviderConfig(name="atp-statusful-for-tests")
+
+    report = DailyPipeline(config).run(date(2026, 8, 9))
+    script = (config.output_dir / "2026-08-09" / "script.txt").read_text(encoding="utf-8")
+
+    assert all(p.tournament_status is None for p in report.players)
+    assert "180" not in script
+    assert "last year" not in script.lower()
+    assert "tournament points" not in script.lower()
+
+
 def test_atp_sample_pipeline_writes_atp_branded_title_and_description(tmp_path: Path) -> None:
     """Presentation-only: sample/fake rankings, no ATP API. Branding must
     say ATP, never WTA."""

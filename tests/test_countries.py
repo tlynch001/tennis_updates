@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from wta_daily.countries import flag_emoji_from_iso2, get_country_info
+from wta_daily.countries import country_code_from_name, flag_emoji_from_iso2, get_country_info
 
 
 def test_known_country_resolves_flag_and_name() -> None:
@@ -29,3 +29,16 @@ def test_empty_country_code_does_not_raise() -> None:
 
 def test_flag_emoji_from_iso2_builds_regional_indicators() -> None:
     assert flag_emoji_from_iso2("fr") == "\U0001F1EB\U0001F1F7"
+
+
+def test_country_code_from_name_maps_vendor_standings_names() -> None:
+    assert country_code_from_name("Italy") == "ITA"
+    assert country_code_from_name("Spain") == "ESP"
+    assert country_code_from_name("Great Britain") == "GBR"
+    assert country_code_from_name("USA") == "USA"
+    assert country_code_from_name("united states") == "USA"
+
+
+def test_country_code_from_name_does_not_guess() -> None:
+    assert country_code_from_name("") == ""
+    assert country_code_from_name("Narnia") == ""

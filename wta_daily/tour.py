@@ -5,10 +5,10 @@ descriptions, narration, graphics attribution) asks a :class:`TourProfile`
 for wording instead of hard-coding WTA strings or branching on the raw
 tour key.
 
-This is **presentation only**. Rankings and match providers stay independently
-configured; an ATP profile does not imply ATP data support exists. Combining
+Rankings and match providers stay independently configured. Combining
 ``tour: atp`` with a WTA-only provider is rejected so an ATP-branded video
-cannot silently show WTA players.
+cannot silently show WTA players. ATP v1 data uses the separate
+``api_tennis_atp`` plugins.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from wta_daily.exceptions import ConfigurationError
 
 #: Provider plugin names that currently fetch WTA data only.
 #: ``wta_official`` is the official WTA JSON backend; ``api_tennis`` hard-codes
-#: ``event_type="WTA"`` standings. Used only to refuse ATP-branded runs that
-#: would still load WTA players. Neither is ATP-aware yet.
+#: ``event_type="WTA"`` standings. The ATP plugins are named ``api_tennis_atp``
+#: (rankings and matches) and are *not* in this set.
 WTA_ONLY_PROVIDER_NAMES = frozenset({"wta_official", "api_tennis"})
 
 #: ``best_of`` with no ``sources`` list uses this mix (see
@@ -47,6 +47,11 @@ class TourProfile:
     ranking_body: str
     attribution: str
     git_commit_message_template: str
+    #: Whether this tour's current data path can honestly populate
+    #: :class:`~wta_daily.models.TournamentRunStatus` (still-alive /
+    #: eliminated / champion / points earned / previous-year). ATP v1 is
+    #: rankings + completed matches only, so this stays ``False`` there.
+    supports_tournament_status: bool = True
 
     @property
     def subject_cap(self) -> str:
@@ -94,9 +99,9 @@ ATP = TourProfile(
     object="him",
     possessive="his",
     ranking_body="the ATP",
-    # No ATP data provider ships yet - do not invent a rankings URL.
-    attribution="Generated automatically",
+    attribution="Data: api-tennis.com  |  Generated automatically  |  wta-daily",
     git_commit_message_template="Daily ATP Update {date}",
+    supports_tournament_status=False,
 )
 
 _PROFILES: dict[str, TourProfile] = {WTA.key: WTA, ATP.key: ATP}
@@ -144,11 +149,12 @@ def assert_tour_providers_compatible(
 ) -> None:
     """Reject ATP (or any non-WTA tour) combined with WTA-only data plugins.
 
-    ``tour: wta`` is unrestricted. ``tour: atp`` with ``sample`` providers is
-    allowed for presentation tests; ``tour: atp`` with ``wta_official`` or
-    ``api_tennis`` (directly or as a ``best_of`` source, including the default
-    ``best_of`` list that includes ``wta_official``) is not, because that run
-    would brand WTA players as ATP.
+    ``tour: wta`` is unrestricted. ``tour: atp`` accepts ``sample`` (offline
+    tests) and ``api_tennis_atp`` (ATP v1). ``tour: atp`` with ``wta_official``
+    or the WTA-specific ``api_tennis`` plugin (directly or as a ``best_of``
+    source, including the default ``best_of`` list that includes
+    ``wta_official``) is rejected, because that run would brand WTA players
+    as ATP.
     """
 
     profile = profile_for(tour)
@@ -167,7 +173,7 @@ def assert_tour_providers_compatible(
         return
     raise ConfigurationError(
         f"tour: {profile.key} cannot use WTA-only data providers ({', '.join(used)}). "
-        "That combination would brand WTA players as ATP. ATP data support is not "
-        "implemented; use tour: wta for production, or sample providers for "
-        "presentation tests."
+        "That combination would brand WTA players as ATP. Use rankings_provider / "
+        "match_provider api_tennis_atp for ATP v1, or sample providers for "
+        "offline tests."
     )

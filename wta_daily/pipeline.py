@@ -424,11 +424,14 @@ class DailyPipeline:
         see :class:`~wta_daily.persistence.tournament_status_store.TournamentStatusStore`.
 
         Returns ``None`` (never a fabricated "unknown" record) when the
-        configured provider has no tournament-draw visibility at all,
-        which every consumer downstream must already treat the same as
+        tour profile does not support tournament status (ATP v1) or when
+        the configured provider has no tournament-draw visibility, which
+        every consumer downstream must already treat the same as
         :attr:`~wta_daily.models.TournamentState.UNKNOWN`.
         """
 
+        if not self._config.tour_profile.supports_tournament_status:
+            return None
         status = tournament_status_by_player.get(player_id)
         if status is None:
             return None

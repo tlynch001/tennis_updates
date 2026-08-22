@@ -56,10 +56,12 @@ def test_atp_profile_is_presentation_only() -> None:
     assert ATP.possessive == "his"
     assert ATP.subject_cap == "He"
     assert ATP.ranking_body == "the ATP"
-    # Do not invent an ATP rankings URL that this repo does not call.
     assert "api.wtatennis.com" not in ATP.attribution
     assert "WTA" not in ATP.attribution
+    assert "api-tennis.com" in ATP.attribution
     assert ATP.git_commit_message_template == "Daily ATP Update {date}"
+    assert ATP.supports_tournament_status is False
+    assert WTA.supports_tournament_status is True
 
 
 def test_wta_phrase_formatting_keeps_production_wording() -> None:
@@ -130,6 +132,16 @@ def test_wta_tour_is_compatible_with_api_tennis_match_provider() -> None:
     )
 
 
+def test_wta_tour_is_compatible_with_api_tennis_atp_names() -> None:
+    """WTA is unrestricted; the ATP plugin names are not WTA-only."""
+
+    assert_tour_providers_compatible(
+        "wta",
+        rankings_provider_name="api_tennis_atp",
+        match_provider_name="api_tennis_atp",
+    )
+
+
 def test_atp_tour_with_sample_providers_is_allowed() -> None:
     assert_tour_providers_compatible(
         "atp",
@@ -184,6 +196,14 @@ def test_atp_tour_allows_best_of_without_wta_official_sources() -> None:
         rankings_provider_name="sample",
         match_provider_name="best_of",
         match_provider_options={"sources": [{"provider": "sample"}]},
+    )
+
+
+def test_atp_tour_accepts_api_tennis_atp_providers() -> None:
+    assert_tour_providers_compatible(
+        "atp",
+        rankings_provider_name="api_tennis_atp",
+        match_provider_name="api_tennis_atp",
     )
 
 

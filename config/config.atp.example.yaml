@@ -1,0 +1,90 @@
+# ATP v1 local configuration
+#
+# Copy this file to config/config.atp.yaml (git-ignored) for a local ATP run.
+# This is not a production scheduler/YouTube setup. It retrieves ATP rankings
+# and yesterday's completed matches via api-tennis.com and writes isolated
+# ATP persistence/output so a WTA production tree is never overwritten.
+#
+# Required secret (never put the key in this file):
+#   APITENNIS_KEY  - see .env.example
+#
+# Run (from the repo root):
+#   python -m wta_daily.cli --config config/config.atp.example.yaml --verbose
+#
+# ATP v1 does NOT implement tournament-status parity (still alive /
+# eliminated / champion / points earned / previous-year comparison),
+# featured-player commentary, autonomous scheduling, or YouTube publishing.
+
+tour: atp
+
+top_n: 10
+rankings_pool_size: 25
+
+# Isolated from the WTA defaults (`data`, `output`, `logs`).
+data_dir: data/atp
+output_dir: output/atp
+log_dir: logs/atp
+
+match_target_date_offset_days: 1
+
+rankings_provider:
+  provider: api_tennis_atp
+  api_key_env: APITENNIS_KEY
+
+match_provider:
+  provider: api_tennis_atp
+  api_key_env: APITENNIS_KEY
+  # Vendor default timezone is Europe/Berlin; UTC matches this project's
+  # reporting-day convention (UTC calendar date).
+  timezone: UTC
+
+rankings:
+  projected_rankings_enabled: false
+
+# ATP v1 is rankings + completed-match narration only. The ATP TourProfile
+# also sets supports_tournament_status=false so this cannot be turned on
+# accidentally and invent WTA-style elimination/points context.
+tournament_status:
+  enabled: false
+  previous_year_lookback_enabled: false
+
+# No ATP featured player in v1.
+featured_player:
+  enabled: false
+
+network:
+  timeout_seconds: 15
+  max_retries: 3
+  backoff_factor: 1.5
+  user_agent: "wta-daily/0.1 (+https://github.com/tlynch001/tennis_updates)"
+
+script:
+  generator: template
+  target_minutes_low: 5
+  target_minutes_high: 8
+  words_per_minute: 150
+
+graphics:
+  renderer: pillow
+  width: 1920
+  height: 1080
+
+voice:
+  enabled: false
+  api_key_env: ELEVENLABS_API_KEY
+
+video:
+  enabled: false
+
+git:
+  auto_commit: false
+  auto_push: false
+
+publishing:
+  thumbnail_enabled: true
+  description_enabled: true
+
+youtube:
+  enabled: false
+
+tournament_preferences: []

@@ -40,6 +40,7 @@ what's next.
 - [YouTube publishing assets](#youtube-publishing-assets)
 - [YouTube publishing (Phase 3: the actual upload)](#youtube-publishing)
 - [Player imagery: legal approach](#player-imagery-legal-approach)
+- [ATP v1 (local, not production)](#atp-v1-local-not-production)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Folder structure](#folder-structure)
@@ -1740,6 +1741,58 @@ are:
 Phase 1 doesn't need any of this - the graphics are flags + typography +
 data, which is already enough for a clean broadcast look.
 
+## ATP v1 (local, not production)
+
+ATP support is a **local, opt-in data path**. It is not scheduled, not
+published to YouTube, and not a second production service.
+
+**What currently works**
+
+- `tour: atp` presentation (titles, pronouns, attribution) from PR #17.
+- Real ATP rankings from api-tennis.com (`get_standings`, `event_type=ATP`)
+  via the new `api_tennis_atp` rankings plugin.
+- Real ATP completed singles matches for the reporting day
+  (`get_fixtures` with `event_type_key=265`) via the new `api_tennis_atp`
+  match plugin.
+- Stable identity: standings `player_key` is stored as `PlayerRanking.player_id`
+  and matched to fixture `first_player_key` / `second_player_key`. No
+  fuzzy-name reconciliation.
+- Isolated persistence/output: `data/atp` and `output/atp` in
+  [`config/config.atp.example.yaml`](config/config.atp.example.yaml).
+
+**What is intentionally missing**
+
+- Tournament-status parity (still alive, eliminated, eliminated-by, champion,
+  tournament points earned, previous-year comparison). ATP
+  `TourProfile.supports_tournament_status` is `false`.
+- Featured-player commentary.
+- Official ranking-list publication date (api-tennis standings rows do not
+  provide one; `ranking_date` stays `null` rather than inventing today).
+- Autonomous scheduling, systemd, cron, or a second YouTube channel.
+- Scraping ATPTour.com.
+
+**How to run locally**
+
+1. Put an api-tennis.com key in `.env` as `APITENNIS_KEY` (see `.env.example`).
+2. Copy or point at the ATP example config:
+
+```bash
+python -m wta_daily.cli \
+  --config config/config.atp.example.yaml \
+  --verbose
+```
+
+Voice/video/YouTube stay disabled in that example so a local run does not
+spend ElevenLabs credits or upload anything. Graphics, `report.json`,
+`script.txt`, `title.txt`, and `youtube_description.txt` are still written
+under `output/atp/<date>/`.
+
+Production WTA behavior is unchanged: keep using `config/config.yaml` with
+`tour: wta` and the existing WTA providers. Do not point an ATP run at the
+WTA `data/` or `output/` directories.
+
+---
+
 ## Quick start
 
 Requires Python 3.11+ (see [Raspberry Pi deployment](#raspberry-pi-deployment)
@@ -1932,12 +1985,14 @@ knowledge of `api.wtatennis.com`, ElevenLabs, ffmpeg, or anything else
 concrete. That's what makes each of these additions a "write one file, wire
 it into `load_builtin_plugins()`" change instead of a pipeline rewrite:
 
-- **ATP version**: add `wta_daily/plugins/rankings/atp_official.py` and
-  `wta_daily/plugins/matches/atp_official.py` implementing the same two
-  interfaces against whatever ATP data source you choose, register them, set
-  `tour: atp` and the new provider names in config. `rankings-history.json`
-  already stores a `tour` field per snapshot so ATP and WTA history can
-  coexist.
+- **ATP version (v1, local only):** `api_tennis_atp` rankings and match
+  plugins are implemented against api-tennis.com. Use
+  `config/config.atp.example.yaml` (`tour: atp`, `data_dir: data/atp`,
+  `output_dir: output/atp`). Tournament-status parity, featured player,
+  scheduling, and YouTube publishing are **not** included. See
+  [ATP v1](#atp-v1-local-not-production). `rankings-history.json` already
+  stores a `tour` field per snapshot so ATP and WTA history can coexist
+  when directories are kept separate.
 - **Top 25 instead of Top 10**: change `top_n: 25` in config. Nothing else.
 - **Combine several data sources for one concern**: plugins can compose
   other plugins purely through the registry - `wta_daily/plugins/matches/best_of.py`
@@ -2270,7 +2325,7 @@ folders, per-player error isolation, unit tests.
   ["YouTube publishing"](#youtube-publishing) above for full setup.
 
 **Future modules** (each addable independently, per the plugin architecture
-above): ATP version, Top 25, tournament previews, head-to-head stats, player
+above): ATP tournament-status parity and publishing, Top 25, tournament previews, head-to-head stats, player
 biographies, career milestones, injury reports, weather, historical ranking
 charts, multi-language narration (Spanish, French, ...), and a genuinely
 new **projected/live ranking** feature - `rankings.projected_rankings_enabled`

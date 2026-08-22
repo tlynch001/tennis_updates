@@ -337,6 +337,36 @@ def test_wta_tour_with_api_tennis_match_provider_is_accepted(tmp_path: Path) -> 
     assert config.match_provider.name == "api_tennis"
 
 
+def test_atp_tour_with_api_tennis_atp_providers_is_accepted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "tour: atp\n"
+        "rankings_provider:\n  provider: api_tennis_atp\n"
+        "match_provider:\n  provider: api_tennis_atp\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tour == "atp"
+    assert config.rankings_provider.name == "api_tennis_atp"
+    assert config.match_provider.name == "api_tennis_atp"
+
+
+def test_atp_example_config_loads() -> None:
+    config = load_config(Path("config/config.atp.example.yaml"))
+
+    assert config.tour == "atp"
+    assert config.rankings_provider.name == "api_tennis_atp"
+    assert config.match_provider.name == "api_tennis_atp"
+    assert config.data_dir == Path("data/atp")
+    assert config.output_dir == Path("output/atp")
+    assert config.featured_player.enabled is False
+    assert config.tournament_status.enabled is False
+    assert config.youtube.enabled is False
+    assert config.tour_profile.supports_tournament_status is False
+
+
 def test_atp_tour_with_sample_providers_is_allowed_for_presentation(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -1,0 +1,92 @@
+[
+  {
+    "place": 1,
+    "player": "Jannik Sinner",
+    "player_key": 2072,
+    "league": "ATP",
+    "movement": "same",
+    "country": "Italy",
+    "points": "13450"
+  },
+  {
+    "place": 2,
+    "player": "Carlos Alcaraz",
+    "player_key": 3105,
+    "league": "ATP",
+    "movement": "same",
+    "country": "Spain",
+    "points": "11250"
+  },
+  {
+    "place": 3,
+    "player": "Alexander Zverev",
+    "player_key": 1980,
+    "league": "ATP",
+    "movement": "up",
+    "country": "Germany",
+    "points": "7465"
+  },
+  {
+    "place": 4,
+    "player": "Novak Djokovic",
+    "player_key": 1403,
+    "league": "ATP",
+    "movement": "down",
+    "country": "Serbia",
+    "points": "4780"
+  },
+  {
+    "place": 5,
+    "player": "Taylor Fritz",
+    "player_key": 2508,
+    "league": "ATP",
+    "movement": "same",
+    "country": "USA",
+    "points": "4675"
+  },
+  {
+    "place": 6,
+    "player": "Jack Draper",
+    "player_key": 3810,
+    "league": "ATP",
+    "movement": "up",
+    "country": "Great Britain",
+    "points": "3460"
+  },
+  {
+    "place": 7,
+    "player": "Holger Rune",
+    "player_key": 3774,
+    "league": "ATP",
+    "movement": "same",
+    "country": "Denmark",
+    "points": "3400"
+  },
+  {
+    "place": 8,
+    "player": "Casper Ruud",
+    "player_key": 2078,
+    "league": "ATP",
+    "movement": "down",
+    "country": "Norway",
+    "points": "3385"
+  },
+  {
+    "place": 9,
+    "player": "Alex de Minaur",
+    "player_key": 2632,
+    "league": "ATP",
+    "movement": "same",
+    "country": "Australia",
+    "points": "3235"
+  },
+  {
+    "place": 10,
+    "player": "Lorenzo Musetti",
+    "player_key": 3104,
+    "league": "ATP",
+    "movement": "up",
+    "country": "Italy",
+    "points": "3095"
+  }
+]

@@ -120,6 +120,60 @@ def flag_emoji_from_iso2(iso2: str) -> str:
     return "".join(chr(ord(ch) + _REGIONAL_INDICATOR_BASE) for ch in iso2)
 
 
+#: Extra English names the ATP api-tennis standings feed has been documented
+#: to use (full country names) that do not match ``_IOC_TO_ISO2`` display
+#: names one-for-one.
+_COUNTRY_NAME_ALIASES: dict[str, str] = {
+    "czech republic": "CZE",
+    "czechia": "CZE",
+    "england": "GBR",
+    "great britain": "GBR",
+    "holland": "NED",
+    "korea": "KOR",
+    "korea, republic of": "KOR",
+    "netherlands": "NED",
+    "people's republic of china": "CHN",
+    "prc": "CHN",
+    "republic of korea": "KOR",
+    "russian federation": "RUS",
+    "south korea": "KOR",
+    "taiwan": "TPE",
+    "the netherlands": "NED",
+    "u.s.a.": "USA",
+    "u.s.": "USA",
+    "uk": "GBR",
+    "united kingdom": "GBR",
+    "united states": "USA",
+    "united states of america": "USA",
+    "usa": "USA",
+    "us": "USA",
+}
+
+
+def _country_name_index() -> dict[str, str]:
+    index: dict[str, str] = dict(_COUNTRY_NAME_ALIASES)
+    for ioc, (_iso2, display_name) in _IOC_TO_ISO2.items():
+        index[display_name.lower()] = ioc
+        index[ioc.lower()] = ioc
+    return index
+
+
+_COUNTRY_NAME_TO_IOC = _country_name_index()
+
+
+def country_code_from_name(name: str) -> str:
+    """Map a vendor country *name* (e.g. ``"Italy"``) to a 3-letter tour code.
+
+    Returns ``""`` when the name is empty or unrecognized - never guesses a
+    country, and never invents a code from a partial string match.
+    """
+
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    return _COUNTRY_NAME_TO_IOC.get(raw.lower(), "")
+
+
 def get_country_info(code: str) -> CountryInfo:
     """Resolve a 3-letter tour country code into display-ready information.
 
