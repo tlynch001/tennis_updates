@@ -51,6 +51,7 @@ from wta_daily.plugins.registry import (
     voice_registry,
 )
 from wta_daily.title import generate_title
+from wta_daily.tour import assert_tour_providers_compatible
 from wta_daily.youtube.uploader import publish_report
 from wta_daily.youtube_description import generate_description
 
@@ -64,6 +65,12 @@ class DailyPipeline:
         load_builtin_plugins()
         self._config = config
         self._repo_root = repo_root or Path.cwd()
+        assert_tour_providers_compatible(
+            config.tour,
+            rankings_provider_name=config.rankings_provider.name,
+            match_provider_name=config.match_provider.name,
+            match_provider_options=config.match_provider.options,
+        )
         self._snapshot_store = RankingsSnapshotStore(config.data_dir)
         self._tournament_status_store = TournamentStatusStore(config.data_dir)
         #: The full rankings response from the most recent run, before it was
@@ -107,7 +114,11 @@ class DailyPipeline:
 
     def run(self, report_date: date | None = None) -> DailyReport:
         report_date = report_date or date.today()
-        logger.info("=== WTA Daily pipeline starting for %s ===", report_date.isoformat())
+        logger.info(
+            "=== %s Daily pipeline starting for %s ===",
+            self._config.tour_profile.display_name,
+            report_date.isoformat(),
+        )
         api_usage.reset()
 
         report = self._build_report(report_date)
@@ -180,7 +191,11 @@ class DailyPipeline:
         # doesn't expose one (e.g. the offline `sample` fixture).
         current_ranking_date = rankings[0].ranking_date if rankings else None
         if current_ranking_date is not None:
-            logger.info("Using official WTA ranking dated %s", current_ranking_date.isoformat())
+            logger.info(
+                "Using official %s ranking dated %s",
+                self._config.tour_profile.display_name,
+                current_ranking_date.isoformat(),
+            )
 
         previous = self._snapshot_store.get_previous_snapshot(report_date, self._config.tour)
         has_previous_snapshot = previous is not None
@@ -209,7 +224,8 @@ class DailyPipeline:
             )
         elif current_ranking_date is not None and previous_ranking_date is not None:
             logger.info(
-                "New official WTA ranking published (previous: %s, now: %s).",
+                "New official %s ranking published (previous: %s, now: %s).",
+                self._config.tour_profile.display_name,
                 previous_ranking_date.isoformat(),
                 current_ranking_date.isoformat(),
             )
@@ -233,7 +249,10 @@ class DailyPipeline:
             resolved_rankings = []
             for ranking in rankings:
                 resolved, warning = resolve_official_ranking(
-                    ranking, previous_by_id.get(ranking.player_id), same_official_ranking_list=True
+                    ranking,
+                    previous_by_id.get(ranking.player_id),
+                    same_official_ranking_list=True,
+                    tour_display_name=self._config.tour_profile.display_name,
                 )
                 if warning:
                     logger.warning(warning)
@@ -387,7 +406,7 @@ class DailyPipeline:
                 "inconclusive); reporting played: false for %s without a match_error.",
                 ", ".join(unresolved_names) or f"{len(result.unresolved_player_ids)} player(s)",
                 target_date.isoformat(),
-                "them" if len(unresolved_names) != 1 else "her",
+                "them" if len(unresolved_names) != 1 else self._config.tour_profile.object,
             )
         return result.matches, result.tournament_status, None
 
@@ -438,11 +457,12 @@ class DailyPipeline:
         fallback_n = max(len(pool) * 4, 100)
         logger.info(
             "Featured player %s (id=%s) was not in the top %d; requesting a "
-            "larger rankings page (top %d) to locate her.",
+            "larger rankings page (top %d) to locate %s.",
             fp_config.name,
             fp_config.player_id,
             len(pool),
             fallback_n,
+            self._config.tour_profile.object,
         )
         try:
             larger_pool = self._rankings_provider.get_top_n(fallback_n)
@@ -457,13 +477,15 @@ class DailyPipeline:
                 return ranking, None
 
         logger.info(
-            "Featured player %s (id=%s) was not found in the top %d WTA rankings this run.",
+            "Featured player %s (id=%s) was not found in the top %d %s rankings this run.",
             fp_config.name,
             fp_config.player_id,
             fallback_n,
+            self._config.tour_profile.display_name,
         )
         return None, (
-            f"{fp_config.name} was not found in the top {fallback_n} WTA rankings this run."
+            f"{fp_config.name} was not found in the top {fallback_n} "
+            f"{self._config.tour_profile.display_name} rankings this run."
         )
 
     def _safe_build_featured_player_report(

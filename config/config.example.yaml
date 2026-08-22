@@ -4,9 +4,12 @@
 # Nothing in here should ever be a secret/API key - those are resolved from
 # environment variables (see .env.example) via the `*_env` settings below.
 
-# Which tour to track. Only "wta" ships today; adding "atp" is a matter of
-# writing new rankings/matches provider plugins and pointing this at them -
-# see wta_daily/plugins/rankings and wta_daily/plugins/matches.
+# Which tour to track. Selects a TourProfile (display name, pronouns, titles,
+# narration branding, attribution). Production rankings/match providers stay
+# independently configured and WTA-specific: `tour: atp` with `wta_official`
+# (directly or as a `best_of` source) is rejected so an ATP-branded video
+# cannot silently show WTA players. ATP data support is not implemented;
+# keep `tour: wta` for production.
 tour: wta
 
 # How many players to track (the brief's "Top 10", but flip to 25 any time).

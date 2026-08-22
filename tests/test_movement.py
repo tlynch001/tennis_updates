@@ -212,6 +212,23 @@ def test_resolve_official_ranking_detects_rank_contradiction() -> None:
     assert warning is not None
     assert "Test Player" in warning
     assert "#4" in warning and "#3" in warning
+    assert "The WTA does not amend" in warning
+
+
+def test_resolve_official_ranking_warning_uses_provided_tour_display_name() -> None:
+    current = _ranking(3, 5000, date(2026, 8, 10))
+    previous = _ranking(4, 5000, date(2026, 8, 10))
+
+    _resolved, warning = resolve_official_ranking(
+        current,
+        previous,
+        same_official_ranking_list=True,
+        tour_display_name="ATP",
+    )
+
+    assert warning is not None
+    assert "The ATP does not amend" in warning
+    assert "The WTA does not" not in warning
 
 
 def test_resolve_official_ranking_detects_points_contradiction() -> None:

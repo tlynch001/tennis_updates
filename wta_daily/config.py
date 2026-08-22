@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from wta_daily.exceptions import ConfigurationError
+from wta_daily.tour import WTA, TourProfile, assert_tour_providers_compatible, profile_for
 
 try:  # pragma: no cover - optional convenience dependency
     from dotenv import load_dotenv
@@ -186,20 +187,24 @@ class GitConfig:
     auto_push: bool = False
     remote: str = "origin"
     branch: str | None = None
-    commit_message_template: str = "Daily WTA Update {date}"
+    commit_message_template: str = WTA.git_commit_message_template
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any] | None) -> GitConfig:
+    def from_mapping(
+        cls,
+        data: dict[str, Any] | None,
+        *,
+        default_commit_message_template: str | None = None,
+    ) -> GitConfig:
         data = data or {}
         defaults = cls()
+        template_default = default_commit_message_template or defaults.commit_message_template
         return cls(
             auto_commit=bool(data.get("auto_commit", defaults.auto_commit)),
             auto_push=bool(data.get("auto_push", defaults.auto_push)),
             remote=data.get("remote", defaults.remote),
             branch=data.get("branch"),
-            commit_message_template=data.get(
-                "commit_message_template", defaults.commit_message_template
-            ),
+            commit_message_template=data.get("commit_message_template", template_default),
         )
 
 
@@ -467,11 +472,31 @@ class AppConfig:
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
     tournament_preferences: list[str] = field(default_factory=list)
 
+    @property
+    def tour_profile(self) -> TourProfile:
+        """Presentation profile selected from :attr:`tour`."""
+
+        return profile_for(self.tour)
+
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> AppConfig:
         defaults = cls()
+        tour = data.get("tour", defaults.tour)
+        profile = profile_for(tour)
+        rankings_provider = ProviderConfig.from_mapping(
+            data.get("rankings_provider"), default_name="wta_official"
+        )
+        match_provider = ProviderConfig.from_mapping(
+            data.get("match_provider"), default_name="wta_official"
+        )
+        assert_tour_providers_compatible(
+            tour,
+            rankings_provider_name=rankings_provider.name,
+            match_provider_name=match_provider.name,
+            match_provider_options=match_provider.options,
+        )
         return cls(
-            tour=data.get("tour", defaults.tour),
+            tour=tour,
             top_n=int(data.get("top_n", defaults.top_n)),
             rankings_pool_size=int(data.get("rankings_pool_size", defaults.rankings_pool_size)),
             data_dir=Path(data.get("data_dir", defaults.data_dir)),
@@ -480,12 +505,8 @@ class AppConfig:
             match_target_date_offset_days=int(
                 data.get("match_target_date_offset_days", defaults.match_target_date_offset_days)
             ),
-            rankings_provider=ProviderConfig.from_mapping(
-                data.get("rankings_provider"), default_name="wta_official"
-            ),
-            match_provider=ProviderConfig.from_mapping(
-                data.get("match_provider"), default_name="wta_official"
-            ),
+            rankings_provider=rankings_provider,
+            match_provider=match_provider,
             featured_player=FeaturedPlayerConfig.from_mapping(data.get("featured_player")),
             rankings=RankingsConfig.from_mapping(data.get("rankings")),
             tournament_status=TournamentStatusConfig.from_mapping(data.get("tournament_status")),
@@ -494,7 +515,10 @@ class AppConfig:
             graphics=GraphicsConfig.from_mapping(data.get("graphics")),
             voice=VoiceConfig.from_mapping(data.get("voice")),
             video=VideoConfig.from_mapping(data.get("video")),
-            git=GitConfig.from_mapping(data.get("git")),
+            git=GitConfig.from_mapping(
+                data.get("git"),
+                default_commit_message_template=profile.git_commit_message_template,
+            ),
             publishing=PublishingConfig.from_mapping(data.get("publishing")),
             youtube=YouTubeConfig.from_mapping(data.get("youtube")),
             tournament_preferences=list(data.get("tournament_preferences", [])),

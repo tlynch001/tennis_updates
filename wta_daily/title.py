@@ -14,6 +14,7 @@ rather than each formatting their own copy.
 from __future__ import annotations
 
 from wta_daily.models import DailyReport
+from wta_daily.tour import profile_for
 
 #: Non-breaking em dash, matches the brief's exact required separator.
 _EM_DASH = "\u2014"
@@ -37,4 +38,4 @@ def generate_title(report: DailyReport) -> str:
 
     top_n = len(report.players)
     date_str = f"{report.report_date:%B} {report.report_date.day}, {report.report_date.year}"
-    return f"WTA Top {top_n} Update {_EM_DASH} {date_str}"
+    return f"{profile_for(report.tour).display_name} Top {top_n} Update {_EM_DASH} {date_str}"

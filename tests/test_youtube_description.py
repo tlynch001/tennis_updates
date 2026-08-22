@@ -200,3 +200,16 @@ def test_changes_with_different_daily_data() -> None:
     report_b = _report([_player(1, "Player Two", _match(tournament="Montreal"))])
 
     assert generate_description(report_a) != generate_description(report_b)
+
+
+def test_atp_description_uses_atp_branding_not_wta() -> None:
+    report = _report([_player(1, "Player One")])
+    report.tour = "atp"
+
+    description = generate_description(report)
+
+    assert "ATP Top 1 Daily Update" in description
+    assert "latest ATP Top 1 rankings." in description
+    assert "daily ATP Top 1 ranking" in description
+    assert "WTA" not in description
+

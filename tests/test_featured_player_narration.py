@@ -21,6 +21,7 @@ from wta_daily.models import (
 )
 from wta_daily.scripts_gen import featured_player_phrases as fp
 from wta_daily.scripts_gen.featured_player import build_segment
+from wta_daily.tour import profile_for
 
 TOP_N = 10
 
@@ -666,3 +667,36 @@ def test_round_omitted_gracefully_in_featured_match_sentence() -> None:
         assert "None" not in segment
         assert "Round Q" not in segment
         assert "Amanda Anisimova" in segment
+
+
+def test_wta_featured_hearts_phrase_still_attributes_the_wta() -> None:
+    from wta_daily.tour import WTA
+
+    phrase = WTA.format(
+        "number {rank} according to {ranking_body}, number one according to "
+        "an extremely biased editorial board",
+        rank=28,
+    )
+    assert phrase == (
+        "number 28 according to the WTA, number one according to an extremely biased editorial board"
+    )
+    hearts = WTA.format(
+        "{ranking_body} has {object} at {rank}; we have {object} exactly where we've always had {object}",
+        rank=28,
+    )
+    assert hearts == "the WTA has her at 28; we have her exactly where we've always had her"
+
+
+def test_atp_featured_segment_does_not_use_wta_or_she_her() -> None:
+    featured = _featured(rank=28, match=None)
+    atp = profile_for("atp")
+
+    for i in range(30):
+        segment = build_segment(featured, top_n=TOP_N, rng=_rng(f"atp-featured-{i}"), profile=atp)
+        assert segment is not None
+        padded = f" {segment.lower()} "
+        assert "wta" not in padded
+        assert " she " not in padded
+        assert " her " not in padded
+        assert "women's" not in padded
+

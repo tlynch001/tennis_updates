@@ -13,6 +13,7 @@ from wta_daily.graphics.flags import render_flag
 from wta_daily.graphics.fonts import load_font
 from wta_daily.graphics.utils import draw_movement_glyph, fit_text, hex_to_rgb, movement_color
 from wta_daily.models import DailyReport
+from wta_daily.tour import profile_for
 
 
 def render_leaderboard(report: DailyReport, output_path: Path, graphics: GraphicsConfig) -> Path:
@@ -144,7 +145,7 @@ def _render(report: DailyReport, output_path: Path, graphics: GraphicsConfig) ->
     footer_font = load_font(theme.font_regular, size=int(footer_height * 0.55))
     draw.text(
         (left_margin, height - footer_height / 2),
-        "Data: WTA (api.wtatennis.com)  |  Generated automatically  |  wta-daily",
+        profile_for(report.tour).attribution,
         font=footer_font,
         fill=subtext_color,
         anchor="lm",

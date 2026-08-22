@@ -84,7 +84,11 @@ def compute_movement(
 
 
 def resolve_official_ranking(
-    current: PlayerRanking, previous: PlayerRanking | None, *, same_official_ranking_list: bool
+    current: PlayerRanking,
+    previous: PlayerRanking | None,
+    *,
+    same_official_ranking_list: bool,
+    tour_display_name: str = "WTA",
 ) -> tuple[PlayerRanking, str | None]:
     """Guard against a contradictory official-ranking fetch.
 
@@ -126,7 +130,8 @@ def resolve_official_ranking(
     warning = (
         f"{current.name}: official ranking dated {current.ranking_date} is unchanged since "
         f"the previous run, but the fetched rank/points changed from #{previous.rank} "
-        f"({previous.points} pts) to #{current.rank} ({current.points} pts). The WTA does not "
+        f"({previous.points} pts) to #{current.rank} ({current.points} pts). "
+        f"The {tour_display_name} does not "
         "amend an already-published ranking, so this is treated as an unreliable fetch - "
         "keeping the previously saved official values instead."
     )

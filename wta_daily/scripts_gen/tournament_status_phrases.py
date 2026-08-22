@@ -37,17 +37,17 @@ from __future__ import annotations
 #: tournament. ``{tournament}`` is the (titleized) tournament name -
 #: used when it's reliably known.
 ELIMINATED_JUST_NOW_WITH_TOURNAMENT: list[str] = [
-    "that ends her run in {tournament} in {round}",
-    "with that loss, her {tournament} run ends in {round}",
-    "her run in {tournament} ends there, in {round}",
-    "that's the end of the road for her in {tournament}, in {round}",
+    "that ends {possessive} run in {tournament} in {round}",
+    "with that loss, {possessive} {tournament} run ends in {round}",
+    "{possessive} run in {tournament} ends there, in {round}",
+    "that's the end of the road for {object} in {tournament}, in {round}",
 ]
 
 #: Same as above, for when the tournament name isn't reliably known.
 ELIMINATED_JUST_NOW_NO_TOURNAMENT: list[str] = [
-    "that brings her tournament to an end in {round}",
-    "that's the end of her run, in {round}",
-    "with that, her tournament run is over, in {round}",
+    "that brings {possessive} tournament to an end in {round}",
+    "that's the end of {possessive} run, in {round}",
+    "with that, {possessive} tournament run is over, in {round}",
 ]
 
 #: First-time-reported elimination that did *not* come from the match
@@ -57,15 +57,15 @@ ELIMINATED_JUST_NOW_NO_TOURNAMENT: list[str] = [
 #: causal language would be inaccurate here since no match was just
 #: described).
 ELIMINATED_OPENING_WITH_ELIMINATOR: list[str] = [
-    "her tournament run is over after {eliminated_by} knocked her out in {round}",
+    "{possessive} tournament run is over after {eliminated_by} knocked {object} out in {round}",
     "{first_name}'s run at this event ended in {round}, beaten by {eliminated_by}",
-    "it's over for {first_name} at this tournament - {eliminated_by} ended her run in {round}",
+    "it's over for {first_name} at this tournament - {eliminated_by} ended {possessive} run in {round}",
     "{first_name} was knocked out in {round}, falling to {eliminated_by}",
 ]
 
 #: Same as above, but for when no eliminator name was reliably available.
 ELIMINATED_OPENING_NO_ELIMINATOR: list[str] = [
-    "her tournament run is over, ending in {round}",
+    "{possessive} tournament run is over, ending in {round}",
     "{first_name}'s tournament came to a close in {round}",
     "{first_name} was eliminated in {round}",
 ]
@@ -84,7 +84,7 @@ ELIMINATED_OPENING_NO_ELIMINATOR: list[str] = [
 #: rewritten to fix it.
 ELIMINATED_BRIEF: list[str] = [
     "{first_name}'s tournament run ended in {round}",
-    "her run at this event ended in {round}",
+    "{possessive} run at this event ended in {round}",
     "{first_name}'s run came to an end in {round}",
 ]
 
@@ -93,13 +93,13 @@ ELIMINATED_BRIEF: list[str] = [
 #: (already said in the match sentence).
 CHAMPION_JUST_NOW_WITH_TOURNAMENT: list[str] = [
     "that's the title at {tournament}",
-    "with that win, she claims the title at {tournament}",
+    "with that win, {subject} claims the title at {tournament}",
     "that completes the run - {first_name} is the {tournament} champion",
 ]
 
 CHAMPION_JUST_NOW_NO_TOURNAMENT: list[str] = [
     "that's the title",
-    "with that win, she claims the title",
+    "with that win, {subject} claims the title",
     "that completes the run - a champion crowned",
 ]
 
@@ -149,27 +149,27 @@ HISTORY_ONLY_SENTENCES: list[str] = [
 #: tournament_status_narration.py). No determiner immediately precedes
 #: {previous_round} in any of these - see the module docstring.
 HISTORY_IMPROVED: list[str] = [
-    "improving on {previous_round} she reached here last year",
-    "better than {previous_round} she reached at this event last year",
-    "a step up from {previous_round} she managed here a year ago",
+    "improving on {previous_round} {subject} reached here last year",
+    "better than {previous_round} {subject} reached at this event last year",
+    "a step up from {previous_round} {subject} managed here a year ago",
 ]
 
 #: Same round reached both years.
 HISTORY_MATCHED: list[str] = [
-    "matching {previous_round} she reached here a year ago",
+    "matching {previous_round} {subject} reached here a year ago",
     "the same result as {previous_round} last year",
 ]
 
 #: This year's result was earlier/worse than last year's.
 HISTORY_WORSE: list[str] = [
-    "a step back from {previous_round} she reached here last year",
-    "short of {previous_round} she managed at this event a year ago",
+    "a step back from {previous_round} {subject} reached here last year",
+    "short of {previous_round} {subject} managed at this event a year ago",
 ]
 
 #: A defended title - the one case HISTORY_IMPROVED/MATCHED don't quite
 #: cover, since "matching" undersells successfully defending a title.
 HISTORY_DEFENDED_TITLE: list[str] = [
-    "successfully defending the title she won here last year",
+    "successfully defending the title {subject} won here last year",
     "backing up last year's title run with another one",
 ]
 

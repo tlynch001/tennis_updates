@@ -34,6 +34,7 @@ from wta_daily.scripts_gen.tournament_status_narration import (
     build_tournament_status_sentence,
     supersedes_inactivity_narration,
 )
+from wta_daily.tour import TourProfile, profile_for
 
 #: A points gap is only treated as a storyline worth mentioning when it's
 #: genuinely tight - see _points_gap_sentence. Loosened past this, nearly
@@ -64,6 +65,7 @@ class TemplateScriptGenerator(ScriptGenerator):
         rng = random.Random(f"{report.report_date.isoformat()}:{report.tour}")
         n = len(report.players)
         date_str = f"{report.report_date:%A, %B} {report.report_date.day}, {report.report_date.year}"
+        profile = profile_for(report.tour)
 
         cyclers = {
             "connector": _PhraseCycler(phrases.CONNECTORS, rng),
@@ -87,12 +89,14 @@ class TemplateScriptGenerator(ScriptGenerator):
         # sign-off must always be the last thing spoken - see
         # _pad_to_target_length's docstring for the production bug this
         # ordering fixes.
-        body_paragraphs = [rng.choice(phrases.OPENERS).format(n=n, date=date_str)]
+        body_paragraphs = [profile.format(rng.choice(phrases.OPENERS), n=n, date=date_str)]
         for index, player in enumerate(report.players):
-            body_paragraphs.append(self._player_paragraph(player, report, index, n, cyclers, rng))
+            body_paragraphs.append(
+                self._player_paragraph(player, report, index, n, cyclers, rng, profile)
+            )
 
         body = "\n\n".join(body_paragraphs)
-        body = self._pad_to_target_length(body, cyclers, rng)
+        body = self._pad_to_target_length(body, cyclers, rng, profile)
 
         # The featured-player segment (if configured) always runs after the
         # legitimate Top N coverage and before the final sign-off - never
@@ -102,12 +106,12 @@ class TemplateScriptGenerator(ScriptGenerator):
         # (the default) produces byte-identical output to before this
         # feature existed.
         segment = (
-            featured_player.build_segment(report.featured_player, top_n=n, rng=rng)
+            featured_player.build_segment(report.featured_player, top_n=n, rng=rng, profile=profile)
             if report.featured_player is not None
             else None
         )
 
-        closer = rng.choice(phrases.CLOSERS).format(n=n)
+        closer = profile.format(rng.choice(phrases.CLOSERS), n=n)
         parts = [body]
         if segment:
             parts.append(segment)
@@ -122,6 +126,7 @@ class TemplateScriptGenerator(ScriptGenerator):
         n: int,
         cyclers: dict[str, _PhraseCycler],
         rng: random.Random,
+        profile: TourProfile,
     ) -> str:
         # The very first player story runs directly after the introduction,
         # with no earlier story to transition "from" - continuation-style
@@ -129,15 +134,19 @@ class TemplateScriptGenerator(ScriptGenerator):
         # sensible starting with the second story onward. See
         # phrases.FIRST_STORY_CONNECTORS's docstring.
         connector_pool = cyclers["connector_first"] if index == 0 else cyclers["connector"]
-        connector = connector_pool.next().format(rank=player.rank, n=n)
+        connector = profile.format(connector_pool.next(), rank=player.rank, n=n)
 
-        movement_clause = {
-            Movement.UP: cyclers["up"].next(),
-            Movement.DOWN: cyclers["down"].next(),
-            Movement.SAME: cyclers["same"].next(),
-            Movement.NEW: cyclers["new"].next(),
-            Movement.UNKNOWN: cyclers["unknown"].next(),
-        }[player.movement].format(rank=player.rank, n=n)
+        movement_clause = profile.format(
+            {
+                Movement.UP: cyclers["up"].next(),
+                Movement.DOWN: cyclers["down"].next(),
+                Movement.SAME: cyclers["same"].next(),
+                Movement.NEW: cyclers["new"].next(),
+                Movement.UNKNOWN: cyclers["unknown"].next(),
+            }[player.movement],
+            rank=player.rank,
+            n=n,
+        )
 
         if connector:
             sentence = f"{connector}{player.name} {movement_clause}"
@@ -172,27 +181,28 @@ class TemplateScriptGenerator(ScriptGenerator):
                 pool = cyclers["win"] if has_round else cyclers["win_no_round"]
             else:
                 pool = cyclers["loss"] if has_round else cyclers["loss_no_round"]
-            match_clause = pool.next().format(
+            match_clause = profile.format(
+                pool.next(),
                 opponent=player.match.opponent,
                 score=format_score_for_narration(player.match.score),
                 round=player.match.round,
                 tournament=player.match.tournament,
             )
-            sentence += f" after she {match_clause}."
+            sentence += f" after {profile.subject} {match_clause}."
 
             # Deliberately vague, occasional, and win-only - see
             # phrases.NEXT_RANKING_NOTES's docstring. This never touches
             # the *current* official rank/movement; it's purely a spoken
             # aside about the *next* publication.
             if player.match.won and rng.random() < _NEXT_RANKING_NOTE_PROBABILITY:
-                sentence += f" {cyclers['next_ranking_note'].next()}"
+                sentence += f" {profile.format(cyclers['next_ranking_note'].next())}"
 
-        extra = self._points_gap_sentence(player, report, index, cyclers, rng)
+        extra = self._points_gap_sentence(player, report, index, cyclers, rng, profile)
         if extra:
             sentence += f" {extra}"
 
         status_sentence = build_tournament_status_sentence(
-            player.tournament_status, player.name, rng, match=player.match
+            player.tournament_status, player.name, rng, match=player.match, profile=profile
         )
         if status_sentence:
             sentence += f" {status_sentence}"
@@ -206,6 +216,7 @@ class TemplateScriptGenerator(ScriptGenerator):
         index: int,
         cyclers: dict[str, _PhraseCycler],
         rng: random.Random,
+        profile: TourProfile,
     ) -> str | None:
         """An occasional storyline, not a required field - see
         _POINTS_GAP_NOTEWORTHY_THRESHOLD/_POINTS_GAP_MENTION_PROBABILITY's
@@ -220,10 +231,14 @@ class TemplateScriptGenerator(ScriptGenerator):
             return None
         if rng.random() >= _POINTS_GAP_MENTION_PROBABILITY:
             return None
-        return cyclers["gap"].next().format(gap=gap, rank_above=above.rank)
+        return profile.format(cyclers["gap"].next(), gap=gap, rank_above=above.rank)
 
     def _pad_to_target_length(
-        self, body: str, cyclers: dict[str, _PhraseCycler], rng: random.Random
+        self,
+        body: str,
+        cyclers: dict[str, _PhraseCycler],
+        rng: random.Random,
+        profile: TourProfile,
     ) -> str:
         """Best-effort nudge toward the configured target word count.
 
@@ -251,4 +266,4 @@ class TemplateScriptGenerator(ScriptGenerator):
         word_count = len(body.split())
         if word_count >= target_words:
             return body
-        return body + "\n\n" + rng.choice(phrases.FIFTY_TWO_WEEK_NOTES)
+        return body + "\n\n" + profile.format(rng.choice(phrases.FIFTY_TWO_WEEK_NOTES))
