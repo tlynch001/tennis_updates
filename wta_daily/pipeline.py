@@ -29,6 +29,7 @@ from wta_daily.models import (
     MatchResult,
     PlayerRanking,
     PlayerReport,
+    RankingsDeparture,
     TournamentRunStatus,
 )
 from wta_daily.movement import (
@@ -373,6 +374,18 @@ class DailyPipeline:
         if featured_ranking is not None and featured_ranking.player_id not in {r.player_id for r in pool}:
             cache_pool.append(featured_ranking)
         self._snapshot_store.update_players_cache(cache_pool)
+        departed_players: list[RankingsDeparture] = []
+        if tour_profile.emphasizes_weekly_ranking_movement and previous_rankings:
+            current_ids = {player.player_id for player in players}
+            departed_players = [
+                RankingsDeparture(
+                    name=prev.name,
+                    player_id=prev.player_id,
+                    previous_rank=prev.rank,
+                )
+                for prev in previous_rankings
+                if prev.player_id not in current_ids
+            ]
         return DailyReport(
             report_date=report_date,
             tour=self._config.tour,
@@ -381,6 +394,7 @@ class DailyPipeline:
             match_target_date=match_target_date,
             featured_player=featured_player_report,
             ranking_date=current_ranking_date,
+            departed_players=departed_players,
         )
 
     def _safe_get_matches_for_date(

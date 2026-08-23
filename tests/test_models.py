@@ -10,6 +10,7 @@ from wta_daily.models import (
     Movement,
     PlayerRanking,
     PlayerReport,
+    RankingsDeparture,
     TournamentRunStatus,
     TournamentState,
 )
@@ -224,6 +225,32 @@ def test_daily_report_ranking_date_defaults_to_none_for_old_reports() -> None:
 
     assert restored.ranking_date is None
     assert restored.to_dict()["ranking_date"] is None
+
+
+def test_daily_report_omits_empty_departed_players_from_json() -> None:
+    report = DailyReport(report_date=date(2026, 8, 9), tour="wta", players=[])
+
+    data = report.to_dict()
+
+    assert "departed_players" not in data
+    restored = DailyReport.from_dict(data)
+    assert restored.departed_players == []
+
+
+def test_daily_report_round_trips_departed_players() -> None:
+    report = DailyReport(
+        report_date=date(2026, 8, 25),
+        tour="atp",
+        players=[],
+        departed_players=[
+            RankingsDeparture(name="Holger Rune", player_id="11", previous_rank=8)
+        ],
+    )
+    restored = DailyReport.from_dict(report.to_dict())
+
+    assert len(restored.departed_players) == 1
+    assert restored.departed_players[0].name == "Holger Rune"
+    assert restored.departed_players[0].previous_rank == 8
 
 
 def test_daily_report_match_target_date_defaults_to_none_for_old_reports() -> None:

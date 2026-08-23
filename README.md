@@ -1814,6 +1814,9 @@ and default config are unchanged.
 
 - Current ATP Top 10 (rank, ranking points, movement vs the previous
   snapshot, official ranking-list date when supplied)
+- Weekly, movement-centric narration: biggest movers, Top 10
+  entrants/departures when the previous snapshot supports them, and
+  shorter hold lines when nothing changed
 - Rankings-focused title, YouTube description, and narration
 - Isolated paths: `data/atp`, `output/atp`, `logs/atp`
 
@@ -1843,6 +1846,13 @@ python -m wta_daily.cli --config config/config.atp.example.yaml
 
 The example config selects `balldontlie_atp`, sets `match_provider: none`,
 and disables featured player, ElevenLabs, video, and YouTube publishing.
+
+To preview movement-heavy weekly wording without touching real ATP history
+or calling the API:
+
+```bash
+python -m wta_daily.scripts_gen.weekly_rankings_narration
+```
 
 **What ATP v1 intentionally does not support**
 

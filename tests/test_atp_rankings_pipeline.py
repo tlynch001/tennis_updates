@@ -154,3 +154,65 @@ def test_offline_atp_pipeline_uses_snapshot_movement_not_vendor_field(
     assert by_name["Carlos Alcaraz"].previous_rank == 1
     assert by_name["Alexander Zverev"].movement is Movement.SAME
     assert report.ranking_date == date(2026, 8, 25)
+
+
+def test_same_date_rerun_does_not_fabricate_movement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second run on the same report_date must compare against the previous
+    week's snapshot, not against the snapshot this date just wrote."""
+
+    monkeypatch.setenv("BALLDONTLIE_API_KEY", "test-key-not-a-secret")
+    config = _atp_config(tmp_path)
+
+    monkeypatch.setattr(BalldontlieAtpClient, "get_rankings", lambda self, n, per_page=None: _WEEK_ONE)
+    first = DailyPipeline(config).run(date(2026, 8, 18))
+    assert all(player.movement is Movement.UNKNOWN for player in first.players)
+
+    rerun_first = DailyPipeline(config).run(date(2026, 8, 18))
+    assert all(player.movement is Movement.UNKNOWN for player in rerun_first.players)
+
+    monkeypatch.setattr(BalldontlieAtpClient, "get_rankings", lambda self, n, per_page=None: _WEEK_TWO)
+    week_two = DailyPipeline(config).run(date(2026, 8, 25))
+    week_two_again = DailyPipeline(config).run(date(2026, 8, 25))
+
+    assert [player.movement for player in week_two.players] == [
+        player.movement for player in week_two_again.players
+    ]
+    assert [player.previous_rank for player in week_two.players] == [
+        player.previous_rank for player in week_two_again.players
+    ]
+    by_name = {player.name: player for player in week_two_again.players}
+    assert by_name["Jannik Sinner"].movement is Movement.UP
+    assert by_name["Carlos Alcaraz"].movement is Movement.DOWN
+    assert by_name["Alexander Zverev"].movement is Movement.SAME
+
+
+def test_atp_pipeline_records_top_n_departures_for_weekly_narration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BALLDONTLIE_API_KEY", "test-key-not-a-secret")
+    config = _atp_config(tmp_path)
+
+    monkeypatch.setattr(BalldontlieAtpClient, "get_rankings", lambda self, n, per_page=None: _WEEK_ONE)
+    DailyPipeline(config).run(date(2026, 8, 18))
+
+    week_two_with_departure = [
+        _entry(rank=1, player_id=20, name="Jannik Sinner", points=13000, ranking_date="2026-08-25"),
+        _entry(rank=2, player_id=10, name="Carlos Alcaraz", points=11800, ranking_date="2026-08-25"),
+        _entry(rank=3, player_id=40, name="Ben Shelton", points=3670, ranking_date="2026-08-25"),
+    ]
+    monkeypatch.setattr(
+        BalldontlieAtpClient, "get_rankings", lambda self, n, per_page=None: week_two_with_departure
+    )
+    report = DailyPipeline(config).run(date(2026, 8, 25))
+    script = (config.output_dir / "2026-08-25" / "script.txt").read_text(encoding="utf-8")
+
+    assert len(report.departed_players) == 1
+    assert report.departed_players[0].name == "Alexander Zverev"
+    assert report.departed_players[0].previous_rank == 3
+    assert "Alexander Zverev" in script
+    assert "out of the Top" in script or "Leaving the Top" in script
+    assert "pushes" not in script.lower()
+    assert report.players[2].movement is Movement.NEW
+    assert "moves into" in script.lower() or "enters" in script.lower()

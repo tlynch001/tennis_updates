@@ -159,6 +159,21 @@ _RANKINGS_ONLY_SYSTEM_ADDENDUM = (
     "sign-off that does not promise a daily return tomorrow."
 )
 
+_WEEKLY_MOVEMENT_SYSTEM_ADDENDUM = (
+    " Emphasize what changed since the previous stored ranking snapshot. "
+    "Lead with the most interesting movement (biggest climb or drop, a new "
+    "number 1, or a Top N entrant). Mention places gained or lost and the "
+    "previous rank when those fields are given. Players with movement 'same' "
+    "get a short hold/remain line plus their points. Movement 'unknown' means "
+    "there is no previous snapshot — state current ranks and points only; do "
+    "not say anyone is new or that they moved. Movement 'new' means the player "
+    "was outside the tracked Top N last snapshot; say they moved into the Top N "
+    "without inventing a career debut or a return. If a 'Left the Top N' line "
+    "is given, mention those players briefly. If nobody moved, say the list is "
+    "steady rather than inventing drama. Keep the tone of a concise weekly "
+    "rankings report."
+)
+
 
 def _system_prompt(profile: TourProfile) -> str:
     """LLM system prompt for ``profile``.
@@ -184,6 +199,8 @@ def _openai_system_prompt(profile: TourProfile) -> str:
     prompt = _system_prompt(profile)
     if not profile.supports_daily_matches:
         prompt += _RANKINGS_ONLY_SYSTEM_ADDENDUM
+    if profile.emphasizes_weekly_ranking_movement:
+        prompt += _WEEKLY_MOVEMENT_SYSTEM_ADDENDUM
     return prompt
 
 
@@ -328,6 +345,13 @@ def _build_user_prompt(report: DailyReport, config: ScriptConfig) -> str:
             if status_line:
                 featured_line += f" Tournament status: {status_line}."
             lines.append(featured_line)
+
+    if profile.emphasizes_weekly_ranking_movement and report.departed_players:
+        lines.extend(["", "Left the Top N since the previous snapshot:"])
+        for departed in report.departed_players:
+            lines.append(
+                f"- {departed.name} (previous rank: {departed.previous_rank})"
+            )
 
     return "\n".join(lines)
 
