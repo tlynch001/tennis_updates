@@ -212,6 +212,7 @@ def test_atp_pipeline_records_top_n_departures_for_weekly_narration(
     assert report.departed_players[0].name == "Alexander Zverev"
     assert report.departed_players[0].previous_rank == 3
     assert "Alexander Zverev" in script
-    assert "out of the Top" in script
+    assert "out of the Top" in script or "Leaving the Top" in script
+    assert "pushes" not in script.lower()
     assert report.players[2].movement is Movement.NEW
     assert "moves into" in script.lower() or "enters" in script.lower()

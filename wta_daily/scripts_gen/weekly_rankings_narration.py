@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 from wta_daily.config import ScriptConfig
 from wta_daily.models import DailyReport, Movement, PlayerReport, RankingsDeparture
+from wta_daily.scripts_gen.name_utils import first_name
+from wta_daily.scripts_gen.phrase_utils import PhraseCycler
 from wta_daily.tour import TourProfile, profile_for
 
 _PLACE_WORDS = {
@@ -80,23 +82,30 @@ ENTRANT_HEADLINES = [
 
 PLAYER_UP = [
     "{name} climbs {places} from number {previous_rank} to number {rank} with {points} points.",
-    "{name} moves up {places} to number {rank}, from number {previous_rank}, with {points} points.",
+    "{name} moves up {places} to number {rank} with {points} points.",
     "{name} gains {places}, rising from number {previous_rank} to number {rank} with {points} points.",
-    "{name} jumps {places} from number {previous_rank} to number {rank} and now sits at {points} points.",
+    "{name} jumps {places} to number {rank} and now sits at {points} points.",
 ]
 
 PLAYER_DOWN = [
-    "{name} slips {places}, from number {previous_rank} to number {rank}, and now sits at {points} points.",
-    "{name} drops {places} from number {previous_rank} to number {rank} with {points} points.",
-    "{name} falls {places}, moving from number {previous_rank} to number {rank} with {points} points.",
+    "{name} slips from number {previous_rank} to number {rank} with {points} points.",
+    "{name} drops {places} to number {rank} with {points} points.",
+    "{name} falls {places} to number {rank} with {points} points.",
     "{name} moves down {places} from number {previous_rank} to number {rank} with {points} points.",
 ]
 
 PLAYER_SAME = [
-    "{name} holds number {rank} with {points} points.",
-    "{name} remains at number {rank} with {points} points.",
+    "{name} holds at number {rank} with {points} points.",
+    "{name} remains number {rank} with {points} points.",
     "{name} stays at number {rank} with {points} points.",
-    "{name} continues at number {rank} with {points} points.",
+    "{name} holds the number {rank} spot with {points} points.",
+    "{name} remains in the number {rank} position with {points} points.",
+]
+
+#: Used when the headline already told this player's full movement story.
+PLAYER_HEADLINE_FOLLOWUP = [
+    "{name} is now number {rank} with {points} points.",
+    "{name} now sits at number {rank} with {points} points.",
 ]
 
 PLAYER_NUMBER_ONE_HOLD = [
@@ -118,12 +127,14 @@ PLAYER_BASELINE = [
 ]
 
 DEPARTURE_LINES = [
-    "That move pushes {name} out of the Top {n} this week.",
-    "{name} drops out of the Top {n} this week, last ranked number {previous_rank}.",
+    "{name} drops out of the Top {n} this week.",
+    "Leaving the Top {n} this week is {name}.",
+    "{name} is out of the Top {n} this week, last ranked number {previous_rank}.",
 ]
 
 MULTI_DEPARTURE_LINES = [
-    "Those changes push {names} out of the Top {n} this week.",
+    "Leaving the Top {n} this week: {names}.",
+    "{names} drop out of the Top {n} this week.",
 ]
 
 POINT_GAP_LINES = [
@@ -226,6 +237,7 @@ def generate_weekly_rankings_script(
     config = script_config or ScriptConfig()
     resolved_profile = profile or profile_for(report.tour)
     rng = random.Random(f"{report.report_date.isoformat()}:{report.tour}:weekly")
+    phrase_rng = random.Random(f"{report.report_date.isoformat()}:{report.tour}:weekly:phrases")
     n = len(report.players)
     title_date = report.ranking_date or report.report_date
     date_str = f"{title_date:%A, %B} {title_date.day}, {title_date.year}"
@@ -233,10 +245,30 @@ def generate_weekly_rankings_script(
 
     opener = resolved_profile.format(rng.choice(OPENERS), n=n, date=date_str)
     headline = _headline(summary, resolved_profile, rng)
-    player_lines = [
-        _player_sentence(player, report, index, summary, resolved_profile, rng)
-        for index, player in enumerate(report.players)
-    ]
+    featured = _headline_featured_player(summary)
+    cyclers = {
+        "same": PhraseCycler(PLAYER_SAME, phrase_rng),
+        "up": PhraseCycler(PLAYER_UP, phrase_rng),
+        "down": PhraseCycler(PLAYER_DOWN, phrase_rng),
+        "followup": PhraseCycler(PLAYER_HEADLINE_FOLLOWUP, phrase_rng),
+        "entrant": PhraseCycler(PLAYER_ENTRANT, phrase_rng),
+        "number_one_hold": PhraseCycler(PLAYER_NUMBER_ONE_HOLD, phrase_rng),
+    }
+    player_lines: list[str] = []
+    previous_verb: str | None = None
+    for index, player in enumerate(report.players):
+        line = _player_sentence(
+            player,
+            report,
+            index,
+            summary,
+            resolved_profile,
+            cyclers,
+            featured,
+            previous_verb,
+        )
+        player_lines.append(line)
+        previous_verb = _leading_verb(line, player.name)
     departure = _departure_sentence(summary, resolved_profile, rng)
     closer = resolved_profile.format(rng.choice(CLOSERS), n=n)
 
@@ -302,22 +334,82 @@ def report_player_is_number_one_mover(summary: WeeklyMovementSummary) -> bool:
     return any(player.rank == 1 and player.movement is Movement.UP for player in summary.movers_up)
 
 
+def _headline_featured_player(summary: WeeklyMovementSummary) -> PlayerReport | None:
+    """The player whose full movement story the headline already told, if any."""
+
+    if summary.is_baseline:
+        return None
+    if (
+        not summary.movers_up
+        and not summary.movers_down
+        and not summary.entrants
+        and not summary.departed
+    ):
+        return None
+    if summary.number_one_changed and report_player_is_number_one_mover(summary):
+        return next(player for player in summary.movers_up if player.rank == 1)
+    biggest = summary.biggest_up
+    biggest_gain = places_delta(biggest) if biggest is not None else None
+    if biggest is not None and biggest_gain is not None and biggest_gain >= 2:
+        return biggest
+    if summary.entrants and not summary.movers_up:
+        return summary.entrants[0]
+    return None
+
+
+def _leading_verb(sentence: str, full_name: str) -> str:
+    """First spoken verb after the player's name, for adjacent-line variety."""
+
+    for prefix in (full_name, first_name(full_name)):
+        if sentence.startswith(prefix + " "):
+            rest = sentence[len(prefix) + 1 :]
+            return rest.split()[0].lower() if rest.split() else ""
+    return ""
+
+
+def _next_phrase(cycler: PhraseCycler, *, avoid_verb: str | None, pool_size: int) -> str:
+    phrase = cycler.next()
+    if not avoid_verb:
+        return phrase
+    for _ in range(pool_size - 1):
+        verb = phrase.removeprefix("{name} ").split()[0].lower()
+        if verb != avoid_verb:
+            return phrase
+        phrase = cycler.next()
+    return phrase
+
+
 def _player_sentence(
     player: PlayerReport,
     report: DailyReport,
     index: int,
     summary: WeeklyMovementSummary,
     profile: TourProfile,
-    rng: random.Random,
+    cyclers: dict[str, PhraseCycler],
+    featured: PlayerReport | None,
+    previous_verb: str | None,
 ) -> str:
     points = f"{player.points:,}"
     if summary.is_baseline or player.movement is Movement.UNKNOWN:
         template = PLAYER_BASELINE[index % len(PLAYER_BASELINE)]
         return profile.format(template, name=player.name, rank=player.rank, points=points)
 
+    if featured is not None and player.player_id == featured.player_id:
+        # Headline already used the full name and the movement story.
+        return profile.format(
+            cyclers["followup"].next(),
+            name=first_name(player.name),
+            rank=player.rank,
+            points=points,
+        )
+
     if player.movement is Movement.NEW:
         return profile.format(
-            rng.choice(PLAYER_ENTRANT),
+            _next_phrase(
+                cyclers["entrant"],
+                avoid_verb=previous_verb,
+                pool_size=len(PLAYER_ENTRANT),
+            ),
             name=player.name,
             rank=player.rank,
             points=points,
@@ -326,19 +418,26 @@ def _player_sentence(
 
     delta = places_delta(player)
     if player.movement is Movement.UP and delta is not None:
-        sentence = profile.format(
-            rng.choice(PLAYER_UP),
+        return profile.format(
+            _next_phrase(
+                cyclers["up"],
+                avoid_verb=previous_verb,
+                pool_size=len(PLAYER_UP),
+            ),
             name=player.name,
             places=format_places(delta),
             previous_rank=player.previous_rank,
             rank=player.rank,
             points=points,
         )
-        return sentence
 
     if player.movement is Movement.DOWN and delta is not None:
         return profile.format(
-            rng.choice(PLAYER_DOWN),
+            _next_phrase(
+                cyclers["down"],
+                avoid_verb=previous_verb,
+                pool_size=len(PLAYER_DOWN),
+            ),
             name=player.name,
             places=format_places(delta),
             previous_rank=player.previous_rank,
@@ -348,13 +447,21 @@ def _player_sentence(
 
     if player.rank == 1:
         sentence = profile.format(
-            rng.choice(PLAYER_NUMBER_ONE_HOLD),
+            _next_phrase(
+                cyclers["number_one_hold"],
+                avoid_verb=previous_verb,
+                pool_size=len(PLAYER_NUMBER_ONE_HOLD),
+            ),
             name=player.name,
             points=points,
         )
     else:
         sentence = profile.format(
-            rng.choice(PLAYER_SAME),
+            _next_phrase(
+                cyclers["same"],
+                avoid_verb=previous_verb,
+                pool_size=len(PLAYER_SAME),
+            ),
             name=player.name,
             rank=player.rank,
             points=points,

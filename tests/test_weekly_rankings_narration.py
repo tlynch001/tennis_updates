@@ -120,11 +120,11 @@ def test_downward_movement_names_one_place_drop() -> None:
     lowered = script.lower()
 
     assert places_delta(report.players[1]) == -1
-    assert "one place" in lowered
-    assert "number 6" in lowered
-    assert "number 7" in lowered
     assert "daniil medvedev" in lowered
+    assert "number 7" in lowered
     assert "3,580" in script
+    assert ", moving from" not in lowered
+    assert "one place" in lowered or "number 6" in lowered
 
 
 def test_unchanged_number_one_uses_hold_wording() -> None:
@@ -155,7 +155,7 @@ def test_top_10_entrant_uses_neutral_wording() -> None:
 
     assert "jack draper" in lowered
     assert "top 2" in lowered or "top 10" in lowered
-    assert "moves into" in lowered or "enters" in lowered
+    assert "moving into" in lowered or "moves into" in lowered or "enters" in lowered
     assert "returns to" not in lowered
     assert "breaks into" not in lowered
     assert "career" not in lowered
@@ -176,7 +176,9 @@ def test_top_10_departure_is_mentioned_when_snapshot_lists_them() -> None:
 
     assert summary.departed == (departed,)
     assert "Holger Rune" in script
-    assert "out of the Top" in script
+    assert "out of the Top" in script or "Leaving the Top" in script
+    assert "pushes" not in script.lower()
+    assert "that move" not in script.lower()
 
 
 def test_biggest_mover_is_the_largest_climb() -> None:
@@ -266,3 +268,131 @@ def test_format_places_uses_words() -> None:
 def test_generate_weekly_helper_matches_template_generator() -> None:
     report = _report([_player(1, "Jannik Sinner", points=13450, previous_rank=1)])
     assert generate_weekly_rankings_script(report) == _script(report)
+
+
+def test_headline_mover_is_not_described_twice() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1),
+            _player(6, "Ben Shelton", points=3670, movement=Movement.UP, previous_rank=10),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert lowered.count("four places") == 1
+    assert lowered.count("from number 10 to number 6") == 1
+    assert lowered.count("ben shelton") == 1
+    assert "3,670" in script
+    assert "ben is now number 6" in lowered or "ben now sits at number 6" in lowered
+
+
+def test_unchanged_player_wording_avoids_continues_at() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1),
+            _player(2, "Carlos Alcaraz", points=10450, previous_rank=2),
+            _player(4, "Novak Djokovic", points=7830, previous_rank=4),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert "continues at" not in lowered
+    assert "carlos alcaraz" in lowered
+    assert "novak djokovic" in lowered
+    assert any(
+        phrase in lowered
+        for phrase in (
+            "holds at number",
+            "remains number",
+            "stays at number",
+            "holds the number",
+            "remains in the number",
+        )
+    )
+
+
+def test_downward_movement_does_not_restate_the_same_change() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1),
+            _player(8, "Alex de Minaur", points=3485, movement=Movement.DOWN, previous_rank=7),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert "alex de minaur" in lowered
+    assert "3,485" in script
+    assert "number 8" in lowered
+    assert ", moving from" not in lowered
+    assert "falls one place, moving" not in lowered
+
+
+def test_adjacent_unchanged_lines_vary_leading_verbs() -> None:
+    players = [
+        _player(i, f"Player {i}", points=10000 - i * 200, previous_rank=i) for i in range(1, 6)
+    ]
+    script = _script(_report(players))
+    lines = [line.split(".")[0] for line in script.split("\n\n") if line.startswith("Player")]
+    verbs = [line.split()[2].lower() for line in lines]
+
+    assert len(verbs) >= 4
+    for left, right in zip(verbs, verbs[1:]):
+        assert left != right
+
+
+def test_wta_daily_narration_path_and_wording_remain_unchanged() -> None:
+    report = DailyReport(
+        report_date=date(2026, 8, 17),
+        tour="wta",
+        players=[
+            PlayerReport(
+                rank=1,
+                name="Aryna Sabalenka",
+                player_id="1",
+                country_code="BLR",
+                points=10000,
+                movement=Movement.SAME,
+                previous_rank=1,
+            ),
+            PlayerReport(
+                rank=2,
+                name="Iga Swiatek",
+                player_id="2",
+                country_code="POL",
+                points=9000,
+                movement=Movement.SAME,
+                previous_rank=2,
+            ),
+        ],
+    )
+    script = TemplateScriptGenerator().generate(report)
+    lowered = script.lower()
+
+    assert "wta top" in lowered
+    assert "did not play yesterday" in lowered
+    assert "women's game" in lowered or "we'll be back tomorrow" in lowered
+    assert "this week's atp" not in lowered
+    assert "this week's wta top" not in lowered
+    assert "biggest mover" not in lowered
+    assert "biggest move" not in lowered
+    assert "we'll see how the rankings change when the next official list is released" not in lowered
+
+
+def test_departure_wording_is_factual_not_causal() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1),
+            _player(10, "Jack Draper", points=2960, movement=Movement.NEW, previous_rank=None),
+        ],
+        departed=[RankingsDeparture(name="Holger Rune", player_id="rune", previous_rank=8)],
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert "holger rune" in lowered
+    assert "pushes" not in lowered
+    assert "that move" not in lowered
+    assert "those changes push" not in lowered
