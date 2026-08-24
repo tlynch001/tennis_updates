@@ -85,6 +85,7 @@ def test_pipeline_marks_players_unknown_on_first_run(tmp_path: Path) -> None:
 
     assert all(p.movement.value == "unknown" for p in report.players)
     assert all(p.previous_rank is None for p in report.players)
+    assert all(p.previous_points is None for p in report.players)
 
 
 def test_pipeline_computes_movement_on_second_run(tmp_path: Path) -> None:
@@ -96,6 +97,7 @@ def test_pipeline_computes_movement_on_second_run(tmp_path: Path) -> None:
     # Same fixture data both days => ranks are unchanged => "same", now that
     # a real previous snapshot exists (as opposed to "unknown" on day one).
     assert all(p.movement.value == "same" for p in report.players)
+    assert all(p.previous_points is not None for p in report.players)
 
 
 class _TrackingRankingsProvider:

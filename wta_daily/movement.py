@@ -145,3 +145,16 @@ def previous_ranks_by_player(previous: list[PlayerRanking] | None) -> dict[str, 
     if not previous:
         return {}
     return {p.player_id: p.rank for p in previous}
+
+
+def previous_points_by_player(previous: list[PlayerRanking] | None) -> dict[str, int]:
+    """Build a ``player_id -> points`` lookup from a previous snapshot.
+
+    Uses the same stored official list as :func:`previous_ranks_by_player`.
+    Missing players are simply absent from the dict — callers should treat
+    that as "no previous point total," never as zero.
+    """
+
+    if not previous:
+        return {}
+    return {p.player_id: p.points for p in previous}

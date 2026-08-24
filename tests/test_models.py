@@ -120,6 +120,25 @@ def test_player_report_round_trip_with_match() -> None:
     assert restored.match == match
     assert restored.played is True
     assert restored.won is True
+    assert "previous_points" not in report.to_dict()
+
+
+def test_player_report_round_trips_previous_points() -> None:
+    report = PlayerReport(
+        rank=2,
+        name="Carlos Alcaraz",
+        player_id="alcaraz",
+        country_code="ESP",
+        points=8160,
+        movement=Movement.SAME,
+        previous_rank=2,
+        previous_points=7730,
+    )
+    data = report.to_dict()
+    assert data["previous_points"] == 7730
+    restored = PlayerReport.from_dict(data)
+    assert restored.previous_points == 7730
+    assert restored.previous_rank == 2
 
 
 def test_player_report_round_trip_with_match_but_unconfirmed_date() -> None:

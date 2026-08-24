@@ -35,6 +35,7 @@ from wta_daily.models import (
 from wta_daily.movement import (
     compute_movement,
     is_same_official_ranking_list,
+    previous_points_by_player,
     previous_ranks_by_player,
     resolve_official_ranking,
 )
@@ -208,6 +209,7 @@ class DailyPipeline:
         has_previous_snapshot = previous is not None
         previous_rankings = previous[1] if previous else None
         previous_ranks = previous_ranks_by_player(previous_rankings)
+        previous_points = previous_points_by_player(previous_rankings)
         previous_ranking_date = previous_rankings[0].ranking_date if previous_rankings else None
         # The single guarantee this whole feature exists for: a match
         # result must never be able to make the app report a ranking
@@ -313,6 +315,7 @@ class DailyPipeline:
             errors.append(batch_error)
         for ranking in rankings:
             previous_rank = previous_ranks.get(ranking.player_id)
+            previous_point_total = previous_points.get(ranking.player_id)
             movement = compute_movement(
                 ranking.rank,
                 previous_rank,
@@ -336,6 +339,7 @@ class DailyPipeline:
                     points=ranking.points,
                     movement=movement,
                     previous_rank=previous_rank,
+                    previous_points=previous_point_total,
                     match=match,
                     match_error=batch_error,
                     tournament_status=tournament_status,
