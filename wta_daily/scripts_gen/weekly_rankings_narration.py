@@ -36,6 +36,8 @@ _PLACE_WORDS = {
 }
 
 _POINTS_GAP_NOTEWORTHY_THRESHOLD = 100
+#: Official ranking-point change between lists that's worth saying out loud.
+_POINTS_DELTA_NOTEWORTHY = 100
 
 OPENERS = [
     "Hello and welcome to the {tour} Top {n} Rankings Update for {date}.",
@@ -59,6 +61,17 @@ STEADY_HEADLINES = [
     "The Top {n} is unusually steady this week, with all {n} players holding their positions.",
     "There is no movement in this week's Top {n} — every player holds the same ranking as last week.",
     "A quiet week at the top: all {n} players remain exactly where they were.",
+]
+
+STEADY_RANKS_POINT_SHIFTS_HEADLINES = [
+    "The Top {n} positions are unchanged this week, although several players saw meaningful changes to their ranking-point totals.",  # noqa: E501
+    "Every player holds the same ranking as last week, but ranking-point totals still shifted on the new list.",  # noqa: E501
+    "There is no change in the Top {n} order this week, though the point totals tell a different story.",
+]
+
+STEADY_RANKS_ONE_POINT_SHIFT_HEADLINES = [
+    "The Top {n} positions are unchanged this week, although {name}'s ranking-point total shifted on the new list.",  # noqa: E501
+    "Every player holds the same ranking as last week, but {name} saw a meaningful change in ranking points.",
 ]
 
 LITTLE_MOVEMENT_HEADLINES = [
@@ -142,6 +155,23 @@ POINT_GAP_LINES = [
     "It's a tight race: only {gap} points separate {object} from number {rank_above}.",
 ]
 
+POINT_GAIN_CLAUSES = [
+    ", gaining {delta} ranking points since last week's list",
+    ", up {delta} points from the previous rankings",
+    ", an increase of {delta} points from last week",
+]
+
+POINT_LOSS_CLAUSES = [
+    ", losing {delta} ranking points since last week",
+    ", down {delta} points from last week",
+    ", a drop of {delta} points from last week's list",
+]
+
+POINT_UNCHANGED_CLAUSES = [
+    ", unchanged from last week",
+    ", {possessive} ranking-point total unchanged from last week",
+]
+
 
 @dataclass(frozen=True)
 class WeeklyMovementSummary:
@@ -158,6 +188,9 @@ class WeeklyMovementSummary:
     number_one_changed: bool
     held_count: int
     tracked_n: int
+    biggest_points_gain: PlayerReport | None
+    biggest_points_loss: PlayerReport | None
+    meaningful_point_changes: tuple[PlayerReport, ...]
 
 
 def places_delta(player: PlayerReport) -> int | None:
@@ -179,6 +212,25 @@ def format_places(distance: int) -> str:
     word = _PLACE_WORDS.get(count, str(count))
     unit = "place" if count == 1 else "places"
     return f"{word} {unit}"
+
+
+def points_delta(player: PlayerReport) -> int | None:
+    """Official ranking-point change vs the previous snapshot.
+
+    ``None`` when there is no previous point total to compare — first-run
+    ``UNKNOWN``, a genuine Top N entrant, or a missing historical value.
+    This is a list-to-list delta, not points earned at a tournament.
+    """
+
+    if player.previous_points is None:
+        return None
+    return player.points - player.previous_points
+
+
+def format_points_delta(distance: int) -> str:
+    """``430`` → ``"430"``; ``1500`` → ``"1,500"``."""
+
+    return f"{abs(int(distance)):,}"
 
 
 def summarize_weekly_movement(report: DailyReport) -> WeeklyMovementSummary:
@@ -212,6 +264,24 @@ def summarize_weekly_movement(report: DailyReport) -> WeeklyMovementSummary:
         and number_one.previous_rank != 1
         and number_one.movement is not Movement.UNKNOWN
     )
+
+    def _gain_key(player: PlayerReport) -> tuple[int, int]:
+        delta = points_delta(player) or 0
+        return (delta, -player.rank)
+
+    def _loss_key(player: PlayerReport) -> tuple[int, int]:
+        delta = points_delta(player) or 0
+        return (-delta, -player.rank)
+
+    gainers = [p for p in players if (points_delta(p) or 0) > 0]
+    losers = [p for p in players if (points_delta(p) or 0) < 0]
+    biggest_points_gain = max(gainers, key=_gain_key) if gainers else None
+    biggest_points_loss = max(losers, key=_loss_key) if losers else None
+    meaningful_point_changes = tuple(
+        p
+        for p in players
+        if (delta := points_delta(p)) is not None and abs(delta) >= _POINTS_DELTA_NOTEWORTHY
+    )
     return WeeklyMovementSummary(
         is_baseline=is_baseline,
         movers_up=movers_up,
@@ -224,6 +294,9 @@ def summarize_weekly_movement(report: DailyReport) -> WeeklyMovementSummary:
         number_one_changed=number_one_changed,
         held_count=len(unchanged),
         tracked_n=n,
+        biggest_points_gain=biggest_points_gain,
+        biggest_points_loss=biggest_points_loss,
+        meaningful_point_changes=meaningful_point_changes,
     )
 
 
@@ -253,6 +326,9 @@ def generate_weekly_rankings_script(
         "followup": PhraseCycler(PLAYER_HEADLINE_FOLLOWUP, phrase_rng),
         "entrant": PhraseCycler(PLAYER_ENTRANT, phrase_rng),
         "number_one_hold": PhraseCycler(PLAYER_NUMBER_ONE_HOLD, phrase_rng),
+        "points_gain": PhraseCycler(POINT_GAIN_CLAUSES, phrase_rng),
+        "points_loss": PhraseCycler(POINT_LOSS_CLAUSES, phrase_rng),
+        "points_same": PhraseCycler(POINT_UNCHANGED_CLAUSES, phrase_rng),
     }
     player_lines: list[str] = []
     previous_verb: str | None = None
@@ -293,6 +369,15 @@ def _headline(summary: WeeklyMovementSummary, profile: TourProfile, rng: random.
         and not summary.entrants
         and not summary.departed
     ):
+        if len(summary.meaningful_point_changes) >= 2:
+            return profile.format(rng.choice(STEADY_RANKS_POINT_SHIFTS_HEADLINES), n=n)
+        if len(summary.meaningful_point_changes) == 1:
+            changed = summary.meaningful_point_changes[0]
+            return profile.format(
+                rng.choice(STEADY_RANKS_ONE_POINT_SHIFT_HEADLINES),
+                n=n,
+                name=changed.name,
+            )
         return profile.format(rng.choice(STEADY_HEADLINES), n=n)
 
     biggest = summary.biggest_up
@@ -379,6 +464,93 @@ def _next_phrase(cycler: PhraseCycler, *, avoid_verb: str | None, pool_size: int
     return phrase
 
 
+def _should_narrate_points_delta(player: PlayerReport, summary: WeeklyMovementSummary) -> bool:
+    """Whether this rundown line should mention the week-to-week point change."""
+
+    if summary.is_baseline or player.movement is Movement.UNKNOWN:
+        return False
+    delta = points_delta(player)
+    if delta is None:
+        return False
+    if player.rank == 1 and delta == 0:
+        return True
+    if player.movement in (Movement.UP, Movement.DOWN) and delta != 0:
+        return True
+    if player.movement is Movement.SAME and abs(delta) >= _POINTS_DELTA_NOTEWORTHY:
+        return True
+    if (
+        summary.biggest_points_gain is not None
+        and summary.biggest_points_gain.player_id == player.player_id
+        and delta >= _POINTS_DELTA_NOTEWORTHY
+    ):
+        return True
+    if (
+        summary.biggest_points_loss is not None
+        and summary.biggest_points_loss.player_id == player.player_id
+        and delta <= -_POINTS_DELTA_NOTEWORTHY
+    ):
+        return True
+    return False
+
+
+def _points_clause_conflicts(sentence: str, clause: str) -> bool:
+    lowered_sentence = sentence.lower()
+    lowered_clause = clause.lower()
+    if "gain" in lowered_sentence and "gain" in lowered_clause:
+        return True
+    if "increas" in lowered_sentence and "increas" in lowered_clause:
+        return True
+    if any(word in lowered_sentence for word in ("drop", "drops", "losing", "lost")) and any(
+        word in lowered_clause for word in ("drop", "losing")
+    ):
+        return True
+    return False
+
+
+def _next_points_clause(
+    cycler: PhraseCycler, sentence: str, pool_size: int, profile: TourProfile, delta: int
+) -> str:
+    formatted_delta = format_points_delta(delta)
+    phrase = cycler.next()
+    for _ in range(pool_size):
+        clause = profile.format(phrase, delta=formatted_delta)
+        if not _points_clause_conflicts(sentence, clause):
+            return clause
+        phrase = cycler.next()
+    return profile.format(phrase, delta=formatted_delta)
+
+
+def _attach_clause(sentence: str, clause: str) -> str:
+    if sentence.endswith("."):
+        return sentence[:-1] + clause + "."
+    return sentence + clause
+
+
+def _with_points_delta(
+    sentence: str,
+    player: PlayerReport,
+    summary: WeeklyMovementSummary,
+    profile: TourProfile,
+    cyclers: dict[str, PhraseCycler],
+) -> str:
+    if not _should_narrate_points_delta(player, summary):
+        return sentence
+    delta = points_delta(player)
+    if delta is None:
+        return sentence
+    if delta > 0:
+        clause = _next_points_clause(
+            cyclers["points_gain"], sentence, len(POINT_GAIN_CLAUSES), profile, delta
+        )
+    elif delta < 0:
+        clause = _next_points_clause(
+            cyclers["points_loss"], sentence, len(POINT_LOSS_CLAUSES), profile, delta
+        )
+    else:
+        clause = profile.format(cyclers["points_same"].next())
+    return _attach_clause(sentence, clause)
+
+
 def _player_sentence(
     player: PlayerReport,
     report: DailyReport,
@@ -396,12 +568,13 @@ def _player_sentence(
 
     if featured is not None and player.player_id == featured.player_id:
         # Headline already used the full name and the movement story.
-        return profile.format(
+        sentence = profile.format(
             cyclers["followup"].next(),
             name=first_name(player.name),
             rank=player.rank,
             points=points,
         )
+        return _with_points_delta(sentence, player, summary, profile, cyclers)
 
     if player.movement is Movement.NEW:
         return profile.format(
@@ -416,34 +589,36 @@ def _player_sentence(
             n=summary.tracked_n,
         )
 
-    delta = places_delta(player)
-    if player.movement is Movement.UP and delta is not None:
-        return profile.format(
+    place_delta = places_delta(player)
+    if player.movement is Movement.UP and place_delta is not None:
+        sentence = profile.format(
             _next_phrase(
                 cyclers["up"],
                 avoid_verb=previous_verb,
                 pool_size=len(PLAYER_UP),
             ),
             name=player.name,
-            places=format_places(delta),
+            places=format_places(place_delta),
             previous_rank=player.previous_rank,
             rank=player.rank,
             points=points,
         )
+        return _with_points_delta(sentence, player, summary, profile, cyclers)
 
-    if player.movement is Movement.DOWN and delta is not None:
-        return profile.format(
+    if player.movement is Movement.DOWN and place_delta is not None:
+        sentence = profile.format(
             _next_phrase(
                 cyclers["down"],
                 avoid_verb=previous_verb,
                 pool_size=len(PLAYER_DOWN),
             ),
             name=player.name,
-            places=format_places(delta),
+            places=format_places(place_delta),
             previous_rank=player.previous_rank,
             rank=player.rank,
             points=points,
         )
+        return _with_points_delta(sentence, player, summary, profile, cyclers)
 
     if player.rank == 1:
         sentence = profile.format(
@@ -466,6 +641,7 @@ def _player_sentence(
             rank=player.rank,
             points=points,
         )
+    sentence = _with_points_delta(sentence, player, summary, profile, cyclers)
     gap = _points_gap_clause(player, report, index, profile)
     if gap:
         sentence += f" {gap}"
@@ -542,6 +718,7 @@ def build_demo_report() -> DailyReport:
         points: int,
         movement: Movement,
         previous_rank: int | None,
+        previous_points: int | None = None,
     ) -> PlayerReport:
         return PlayerReport(
             rank=rank,
@@ -551,19 +728,20 @@ def build_demo_report() -> DailyReport:
             points=points,
             movement=movement,
             previous_rank=previous_rank,
+            previous_points=previous_points,
         )
 
     players = [
-        _player(1, "Jannik Sinner", "1", 13450, Movement.SAME, 1),
-        _player(2, "Carlos Alcaraz", "2", 10450, Movement.SAME, 2),
-        _player(3, "Alexander Zverev", "3", 10380, Movement.SAME, 3),
-        _player(4, "Novak Djokovic", "4", 7830, Movement.SAME, 4),
-        _player(5, "Taylor Fritz", "5", 4655, Movement.SAME, 5),
-        _player(6, "Ben Shelton", "6", 3670, Movement.UP, 10),
-        _player(7, "Daniil Medvedev", "7", 3580, Movement.DOWN, 6),
-        _player(8, "Alex de Minaur", "8", 3485, Movement.DOWN, 7),
-        _player(9, "Lorenzo Musetti", "9", 3255, Movement.SAME, 9),
-        _player(10, "Jack Draper", "10", 2960, Movement.NEW, None),
+        _player(1, "Jannik Sinner", "1", 13450, Movement.SAME, 1, 13450),
+        _player(2, "Carlos Alcaraz", "2", 10450, Movement.SAME, 2, 10020),
+        _player(3, "Alexander Zverev", "3", 10380, Movement.SAME, 3, 10700),
+        _player(4, "Novak Djokovic", "4", 7830, Movement.SAME, 4, 7830),
+        _player(5, "Taylor Fritz", "5", 4655, Movement.SAME, 5, 4655),
+        _player(6, "Ben Shelton", "6", 3670, Movement.UP, 10, 3170),
+        _player(7, "Daniil Medvedev", "7", 3580, Movement.DOWN, 6, 3900),
+        _player(8, "Alex de Minaur", "8", 3485, Movement.DOWN, 7, 3300),
+        _player(9, "Lorenzo Musetti", "9", 3255, Movement.SAME, 9, 3255),
+        _player(10, "Jack Draper", "10", 2960, Movement.NEW, None, None),
     ]
     return DailyReport(
         report_date=date(2026, 8, 25),

@@ -109,6 +109,8 @@ def test_offline_atp_pipeline_produces_rankings_report(
     ]
     assert report.players[0].points == 12000
     assert report.players[0].movement is Movement.UNKNOWN
+    assert report.players[0].previous_points is None
+    assert all(player.previous_points is None for player in report.players)
     assert all(player.match is None for player in report.players)
     assert all(player.tournament_status is None for player in report.players)
     assert "did not play" not in caplog.text.lower()
@@ -150,10 +152,18 @@ def test_offline_atp_pipeline_uses_snapshot_movement_not_vendor_field(
     # is what the report uses: Sinner 2 -> 1 (up), Alcaraz 1 -> 2 (down).
     assert by_name["Jannik Sinner"].movement is Movement.UP
     assert by_name["Jannik Sinner"].previous_rank == 2
+    assert by_name["Jannik Sinner"].previous_points == 11500
     assert by_name["Carlos Alcaraz"].movement is Movement.DOWN
     assert by_name["Carlos Alcaraz"].previous_rank == 1
+    assert by_name["Carlos Alcaraz"].previous_points == 12000
     assert by_name["Alexander Zverev"].movement is Movement.SAME
+    assert by_name["Alexander Zverev"].previous_points == 7000
     assert report.ranking_date == date(2026, 8, 25)
+    script = (config.output_dir / "2026-08-25" / "script.txt").read_text(encoding="utf-8")
+    lowered = script.lower()
+    assert "1,500" in script or "1500" in script
+    assert "200" in script
+    assert "points earned" not in lowered
 
 
 def test_same_date_rerun_does_not_fabricate_movement(
@@ -181,6 +191,9 @@ def test_same_date_rerun_does_not_fabricate_movement(
     ]
     assert [player.previous_rank for player in week_two.players] == [
         player.previous_rank for player in week_two_again.players
+    ]
+    assert [player.previous_points for player in week_two.players] == [
+        player.previous_points for player in week_two_again.players
     ]
     by_name = {player.name: player for player in week_two_again.players}
     assert by_name["Jannik Sinner"].movement is Movement.UP

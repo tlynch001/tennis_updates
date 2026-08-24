@@ -333,6 +333,12 @@ class PlayerReport:
     points: int
     movement: Movement
     previous_rank: int | None = None
+    #: Official ranking-point total on the previous stored snapshot, when
+    #: this player was in that tracked group. ``None`` on a first run, for
+    #: a genuine Top N entrant, or when no prior list is available.
+    #: Week-to-week ``points - previous_points`` is a change in official
+    #: ranking points between published lists — not "points earned."
+    previous_points: int | None = None
     match: MatchResult | None = None
     match_error: str | None = None
     #: See :class:`TournamentRunStatus`. ``None`` whenever the configured
@@ -361,6 +367,8 @@ class PlayerReport:
             "played": self.played,
             "won": self.won,
         }
+        if self.previous_points is not None:
+            data["previous_points"] = self.previous_points
         if self.match is not None:
             data["opponent"] = self.match.opponent
             data["score"] = self.match.score
@@ -396,6 +404,7 @@ class PlayerReport:
                 surface=data.get("surface"),
             )
         raw_tournament_status = data.get("tournament_status")
+        raw_previous_points = data.get("previous_points")
         return cls(
             rank=int(data["rank"]),
             name=str(data["name"]),
@@ -404,6 +413,7 @@ class PlayerReport:
             points=int(data.get("points", 0)),
             movement=Movement(data.get("movement", "new")),
             previous_rank=data.get("previous_rank"),
+            previous_points=int(raw_previous_points) if raw_previous_points is not None else None,
             match=match,
             match_error=data.get("match_error"),
             tournament_status=(

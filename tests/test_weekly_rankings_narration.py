@@ -13,6 +13,7 @@ from wta_daily.scripts_gen.weekly_rankings_narration import (
     format_places,
     generate_weekly_rankings_script,
     places_delta,
+    points_delta,
     summarize_weekly_movement,
 )
 from wta_daily.tour import ATP, WTA
@@ -25,6 +26,7 @@ def _player(
     points: int = 5000,
     movement: Movement = Movement.SAME,
     previous_rank: int | None = None,
+    previous_points: int | None = None,
     player_id: str | None = None,
 ) -> PlayerReport:
     return PlayerReport(
@@ -35,6 +37,7 @@ def _player(
         points=points,
         movement=movement,
         previous_rank=previous_rank,
+        previous_points=previous_points,
     )
 
 
@@ -83,6 +86,11 @@ def test_first_run_is_baseline_without_fake_movement() -> None:
     assert "another week" not in lowered
     assert "13,450 ranking points" in script
     assert "12,000 ranking points" in script
+    assert "did not play yesterday" not in lowered
+    assert "since last week" not in lowered
+    assert "from last week" not in lowered
+    assert "unchanged from last week" not in lowered
+    assert "points earned" not in lowered
     assert "did not play yesterday" not in lowered
     assert "wta" not in lowered
     assert " she " not in f" {script} "
@@ -396,3 +404,211 @@ def test_departure_wording_is_factual_not_causal() -> None:
     assert "pushes" not in lowered
     assert "that move" not in lowered
     assert "those changes push" not in lowered
+
+
+def test_points_delta_helper() -> None:
+    gained = _player(2, "Carlos Alcaraz", points=8160, previous_rank=2, previous_points=7730)
+    lost = _player(3, "Alexander Zverev", points=8090, previous_rank=3, previous_points=8410)
+    unchanged = _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450)
+    missing = _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=None)
+
+    assert points_delta(gained) == 430
+    assert points_delta(lost) == -320
+    assert points_delta(unchanged) == 0
+    assert points_delta(missing) is None
+
+
+def test_gains_points_while_rank_unchanged() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(2, "Carlos Alcaraz", points=8160, previous_rank=2, previous_points=7730),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert points_delta(report.players[1]) == 430
+    assert "carlos alcaraz" in lowered
+    assert "8,160" in script
+    assert "430" in script
+    assert "points earned" not in lowered
+    assert "earned this week" not in lowered
+
+
+def test_loses_points_while_rank_unchanged() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(3, "Alexander Zverev", points=8090, previous_rank=3, previous_points=8410),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert points_delta(report.players[1]) == -320
+    assert "alexander zverev" in lowered
+    assert "320" in script
+    assert "points earned" not in lowered
+
+
+def test_rank_and_points_both_increase() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(
+                6,
+                "Ben Shelton",
+                points=4655,
+                movement=Movement.UP,
+                previous_rank=8,
+                previous_points=4155,
+            ),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert places_delta(report.players[1]) == 2
+    assert points_delta(report.players[1]) == 500
+    assert "ben shelton" in lowered
+    assert "500" in script
+    assert "number 6" in lowered
+    assert "points earned" not in lowered
+
+
+def test_rank_improves_while_point_total_decreases() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(
+                4,
+                "Taylor Fritz",
+                points=4500,
+                movement=Movement.UP,
+                previous_rank=5,
+                previous_points=4800,
+            ),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert places_delta(report.players[1]) == 1
+    assert points_delta(report.players[1]) == -300
+    assert "taylor fritz" in lowered
+    assert "300" in script
+    assert any(word in lowered for word in ("down", "losing", "drop"))
+    assert "points earned" not in lowered
+
+
+def test_rank_falls_while_point_total_increases() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(
+                8,
+                "Alex de Minaur",
+                points=3485,
+                movement=Movement.DOWN,
+                previous_rank=7,
+                previous_points=3300,
+            ),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert places_delta(report.players[1]) == -1
+    assert points_delta(report.players[1]) == 185
+    assert "alex de minaur" in lowered
+    assert "185" in script
+    assert any(word in lowered for word in ("up ", "gaining", "increase"))
+    assert "points earned" not in lowered
+
+
+def test_points_unchanged_from_last_week() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+            _player(2, "Carlos Alcaraz", points=10450, previous_rank=2, previous_points=10450),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert points_delta(report.players[0]) == 0
+    assert "unchanged from last week" in lowered
+    assert "jannik sinner" in lowered
+    assert "points earned" not in lowered
+
+
+def test_previous_points_unavailable_omits_week_to_week_change() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=None),
+            _player(2, "Carlos Alcaraz", points=8160, previous_rank=2, previous_points=None),
+        ]
+    )
+    script = _script(report)
+    lowered = script.lower()
+
+    assert points_delta(report.players[1]) is None
+    assert "since last week" not in lowered
+    assert "from last week" not in lowered
+    assert "from the previous rankings" not in lowered
+    assert "8,160" in script
+
+
+def test_opening_notes_point_shifts_when_rankings_are_unchanged() -> None:
+    players = [
+        _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13450),
+        _player(2, "Carlos Alcaraz", points=8160, previous_rank=2, previous_points=7730),
+        _player(3, "Alexander Zverev", points=8090, previous_rank=3, previous_points=8410),
+    ]
+    report = _report(players)
+    summary = summarize_weekly_movement(report)
+    script = _script(report)
+    lowered = script.lower()
+
+    assert summary.is_baseline is False
+    assert summary.biggest_up is None
+    assert len(summary.meaningful_point_changes) == 2
+    assert "positions are unchanged" in lowered or "same ranking" in lowered or "no change in the top" in lowered
+    assert "quiet week" not in lowered
+    assert "remain exactly where they were" not in lowered
+    assert "430" in script
+    assert "320" in script
+    assert "points earned" not in lowered
+
+
+def test_weekly_narration_never_calls_delta_points_earned() -> None:
+    report = _report(
+        [
+            _player(1, "Jannik Sinner", points=13450, previous_rank=1, previous_points=13000),
+            _player(
+                6,
+                "Ben Shelton",
+                points=3670,
+                movement=Movement.UP,
+                previous_rank=10,
+                previous_points=3170,
+            ),
+            _player(
+                8,
+                "Alex de Minaur",
+                points=3485,
+                movement=Movement.DOWN,
+                previous_rank=7,
+                previous_points=3300,
+            ),
+        ]
+    )
+    script = _script(report).lower()
+
+    assert "points earned" not in script
+    assert "earned this week" not in script
+    assert "earned at" not in script
+    assert "because he won" not in script
+    assert "because of a tournament" not in script
+

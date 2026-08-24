@@ -6,6 +6,7 @@ from wta_daily.models import Movement, PlayerRanking
 from wta_daily.movement import (
     compute_movement,
     is_same_official_ranking_list,
+    previous_points_by_player,
     previous_ranks_by_player,
     resolve_official_ranking,
 )
@@ -279,3 +280,20 @@ def test_previous_ranks_by_player_handles_none() -> None:
 
 def test_previous_ranks_by_player_handles_empty_list() -> None:
     assert previous_ranks_by_player([]) == {}
+
+
+def test_previous_points_by_player_builds_lookup() -> None:
+    previous = [
+        PlayerRanking(rank=1, player_id="a", name="A", country_code="USA", points=100),
+        PlayerRanking(rank=2, player_id="b", name="B", country_code="FRA", points=90),
+    ]
+    lookup = previous_points_by_player(previous)
+    assert lookup == {"a": 100, "b": 90}
+
+
+def test_previous_points_by_player_handles_none() -> None:
+    assert previous_points_by_player(None) == {}
+
+
+def test_previous_points_by_player_handles_empty_list() -> None:
+    assert previous_points_by_player([]) == {}
