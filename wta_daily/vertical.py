@@ -165,7 +165,7 @@ def _render_person_card(*, name: str, country_code: str, rank: int | None, point
         draw.rounded_rectangle([badge_x1, badge_y1, badge_x2, badge_y1 + badge_h], radius=int(badge_h * 0.35), outline=badge_color, width=3)
         draw.text(((badge_x1 + badge_x2) / 2, badge_y1 + badge_h / 2), movement_text, font=badge_font, fill=badge_color, anchor='mm')
     match_top = int(height * 0.53)
-    match_bottom = int(height * 0.84)
+    match_bottom = int(height * 0.89)
     draw.rounded_rectangle([margin, match_top, width - margin, match_bottom], radius=int(height * 0.02), fill=panel)
     section_label = "YESTERDAY'S MATCH" if supports_daily_matches else 'RANKING UPDATE'
     draw.text((margin * 1.45, match_top + height * 0.045), section_label, font=section_font, fill=subtext_color, anchor='la')
