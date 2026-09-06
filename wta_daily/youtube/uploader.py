@@ -1,17 +1,8 @@
-"""Optional Phase 3: publishes the finished daily video to YouTube via the
-official YouTube Data API v3 - never Selenium, browser automation, or
-YouTube Studio scripting.
+"""Optional YouTube publishing via the official YouTube Data API v3.
 
-Mirrors :mod:`wta_daily.git_automation`'s shape: a single, optional,
-isolated final pipeline stage, entirely gated by config, with its own
-narrow exception types, that can never take down the rest of a run if it
-fails (see :func:`publish_report`'s docstring for the full failure-mode
-contract).
-
-This module consumes artifacts already produced by earlier phases
-(``video.mp4``, ``thumbnail.png``, ``youtube_description.txt``, the
-canonical title from :mod:`wta_daily.title`) - it never regenerates any of
-them itself.
+This module consumes already-generated artifacts. It never regenerates data,
+narration, titles, descriptions, graphics, or video. Standard landscape and
+vertical Short uploads are tracked independently.
 """
 
 from __future__ import annotations
@@ -26,7 +17,11 @@ from wta_daily.config import YouTubeConfig
 from wta_daily.exceptions import WtaDailyError
 from wta_daily.models import DailyReport
 from wta_daily.persistence.report_store import DailyOutputStore
-from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
+from wta_daily.persistence.youtube_upload_store import (
+    LANDSCAPE_VARIANT,
+    VERTICAL_VARIANT,
+    YouTubeUploadStore,
+)
 from wta_daily.title import generate_title
 from wta_daily.youtube.auth import get_credentials
 
@@ -34,18 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 class YouTubeUploadError(WtaDailyError):
-    """Raised (internally - callers should prefer :class:`YouTubePublishResult`)
-    when the video or thumbnail upload call itself fails."""
+    """Raised internally when the video or thumbnail upload call fails."""
 
 
 @dataclass
 class YouTubePublishResult:
-    """The outcome of one :func:`publish_report` call - deliberately a
-    plain return value rather than a raised exception for every non-success
-    case, since "YouTube publishing failed" must never look like "the whole
-    pipeline run failed" to a caller (see the module docstring)."""
+    """Outcome of one publish attempt."""
 
-    #: "disabled" | "skipped_duplicate" | "success" | "failed"
     status: str
     video_id: str | None = None
     video_url: str | None = None
@@ -60,17 +50,9 @@ class YouTubePublishResult:
 
 
 def build_client(config: YouTubeConfig) -> Any:
-    """Construct an authenticated ``googleapiclient`` YouTube resource.
-
-    Only ever called when ``config.enabled`` is ``True``. The
-    ``google-api-python-client`` import is deferred here (rather than at
-    module level) so merely importing :mod:`wta_daily.youtube.uploader`
-    never requires it to be installed - see the package docstring.
-    """
-
     try:
         from googleapiclient.discovery import build
-    except ImportError as exc:  # pragma: no cover - exercised only without the optional deps
+    except ImportError as exc:  # pragma: no cover
         raise YouTubeUploadError(
             "YouTube publishing requires the optional google-api-python-client package, "
             "which is not installed. Run: pip install -r requirements-youtube.txt "
@@ -118,6 +100,14 @@ def _read_text_or_none(path: Path) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def _video_path_for_variant(store: DailyOutputStore, variant: str) -> Path:
+    if variant == LANDSCAPE_VARIANT:
+        return store.video_path
+    if variant == VERTICAL_VARIANT:
+        return store.root / "vertical" / "video.mp4"
+    raise ValueError(f"Unsupported YouTube upload variant: {variant!r}")
+
+
 def publish_report(
     report: DailyReport,
     store: DailyOutputStore,
@@ -125,39 +115,27 @@ def publish_report(
     upload_store: YouTubeUploadStore,
     *,
     force: bool = False,
+    variant: str = LANDSCAPE_VARIANT,
     client_factory: Callable[[YouTubeConfig], Any] = build_client,
 ) -> YouTubePublishResult:
-    """Upload one day's finished video package to YouTube.
+    """Upload one already-generated video package to YouTube.
 
-    Failure contract (see the "Phase 3" brief this implements):
-
-    * If ``config.enabled`` is ``False``, returns immediately with
-      ``status="disabled"`` - no credential loading, no import of any
-      Google library, no network call. This is the default and must stay
-      side-effect-free.
-    * If this exact ``(report.report_date, report.tour)`` was already
-      uploaded successfully (see :class:`~wta_daily.persistence.youtube_upload_store.YouTubeUploadStore`),
-      returns ``status="skipped_duplicate"`` without uploading again,
-      unless ``force=True``.
-    * A video-upload failure never deletes/regenerates any local artifact
-      (``video.mp4``, ``thumbnail.png``, etc.) - it simply returns
-      ``status="failed"`` with ``video_error`` set, and nothing is
-      recorded in ``upload_store`` (so a later retry is treated as a fresh
-      attempt, not a duplicate).
-    * A *thumbnail* failure after a *successful* video upload is reported
-      separately (``thumbnail_error`` set, ``status`` stays ``"success"``)
-      - the video is never re-uploaded just because the thumbnail step
-      failed, and the successful video upload is still recorded.
+    ``variant='landscape'`` preserves the existing behavior, including the
+    custom thumbnail. ``variant='vertical'`` uploads
+    ``output/<date>/vertical/video.mp4`` with the same title and description
+    and deliberately skips the landscape thumbnail. Each variant has its own
+    duplicate-protection record.
     """
 
     if not config.enabled:
         logger.debug("YouTube publishing is disabled (youtube.enabled: false); skipping.")
         return YouTubePublishResult(status="disabled", message="youtube.enabled is false")
 
-    existing = upload_store.get_upload(report.report_date, report.tour)
+    video_path = _video_path_for_variant(store, variant)
+    existing = upload_store.get_upload(report.report_date, report.tour, variant)
     if existing is not None and not force:
         message = (
-            f"YouTube upload skipped: report for {report.report_date.isoformat()} "
+            f"YouTube {variant} upload skipped: report for {report.report_date.isoformat()} "
             f"already uploaded as {existing.video_id}"
         )
         logger.info(message)
@@ -168,50 +146,61 @@ def publish_report(
             message=message,
         )
 
-    if not store.video_path.exists():
-        message = f"No video found at {store.video_path}; cannot publish to YouTube."
+    if not video_path.exists():
+        message = f"No {variant} video found at {video_path}; cannot publish to YouTube."
         logger.error(message)
         return YouTubePublishResult(status="failed", video_error=message)
 
-    title = generate_title(report)
+    # The vertical upload deliberately reuses the completed run's existing
+    # title/description. Landscape keeps its historical title fallback.
+    saved_title = _read_text_or_none(store.title_path)
+    title = (saved_title.strip() if saved_title else None) or generate_title(report)
     description = _read_text_or_none(store.youtube_description_path) or ""
 
-    logger.info("YouTube publishing enabled")
-    logger.info("Uploading video...")
+    logger.info("YouTube publishing enabled (%s)", variant)
+    logger.info("Uploading %s video...", variant)
     try:
         client = client_factory(config)
         video_id = _upload_video(
             client,
-            store.video_path,
+            video_path,
             title=title,
             description=description,
             category_id=config.category_id,
             privacy_status=config.privacy,
         )
-    except Exception as exc:  # noqa: BLE001 - a publishing failure must never crash the run
-        logger.error("YouTube video upload failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("YouTube %s video upload failed: %s", variant, exc)
         return YouTubePublishResult(status="failed", video_error=str(exc))
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    logger.info("Video uploaded successfully")
+    logger.info("%s video uploaded successfully", variant.capitalize())
     logger.info("YouTube video ID: %s", video_id)
     logger.info("YouTube URL: %s", video_url)
 
     result = YouTubePublishResult(status="success", video_id=video_id, video_url=video_url)
 
-    if store.thumbnail_path.exists():
-        logger.info("Uploading custom thumbnail...")
-        try:
-            _set_thumbnail(client, video_id, store.thumbnail_path)
-            result.thumbnail_uploaded = True
-            logger.info("Thumbnail uploaded successfully")
-        except Exception as exc:  # noqa: BLE001 - the video upload above already succeeded
-            result.thumbnail_error = str(exc)
-            logger.error("Thumbnail upload failed (video %s uploaded fine): %s", video_id, exc)
+    if variant == LANDSCAPE_VARIANT:
+        if store.thumbnail_path.exists():
+            logger.info("Uploading custom thumbnail...")
+            try:
+                _set_thumbnail(client, video_id, store.thumbnail_path)
+                result.thumbnail_uploaded = True
+                logger.info("Thumbnail uploaded successfully")
+            except Exception as exc:  # noqa: BLE001
+                result.thumbnail_error = str(exc)
+                logger.error("Thumbnail upload failed (video %s uploaded fine): %s", video_id, exc)
+        else:
+            logger.info("No thumbnail found at %s; skipping thumbnail upload.", store.thumbnail_path)
     else:
-        logger.info("No thumbnail found at %s; skipping thumbnail upload.", store.thumbnail_path)
+        logger.info("Vertical upload: skipping landscape custom thumbnail.")
 
     upload_store.record_upload(
-        report.report_date, report.tour, video_id=video_id, video_url=video_url, title=title
+        report.report_date,
+        report.tour,
+        video_id=video_id,
+        video_url=video_url,
+        title=title,
+        variant=variant,
     )
     return result
