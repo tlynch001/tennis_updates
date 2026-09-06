@@ -191,8 +191,8 @@ def _render_person_card(*, name: str, country_code: str, rank: int | None, point
             message = 'Match data unavailable today.'
         else:
             message = 'Did not play yesterday.'
-        message = fit_text(draw, message, result_font, int(width - margin * 3))
-        draw.text((margin * 1.45, match_top + height * 0.12), message, font=result_font, fill=subtext_color, anchor='la')
+        message_font = _font_that_fits(draw, message, font_path=theme.font_bold, start_size=int(height * 0.035), min_size=int(height * 0.024), max_width=int(width - margin * 3), bold=True)
+        draw.text((margin * 1.45, match_top + height * 0.12), message, font=message_font, fill=subtext_color, anchor='la')
     output_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(output_path, 'PNG')
     return output_path
