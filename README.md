@@ -1857,6 +1857,10 @@ python -m wta_daily.scripts_gen.weekly_rankings_narration
 **What ATP v1 intentionally does not support**
 
 - Daily match results (no ATP match provider)
+- Weekly tournament recap / “what he did on court this ranking week”
+  (BALLDONTLIE match results are paid ALL-STAR; free tournaments are
+  calendar metadata only — see
+  [`docs/atp-balldontlie-match-api-spike.md`](docs/atp-balldontlie-match-api-spike.md))
 - Tournament status (elimination / champion / points earned / previous year)
 - Featured-player analysis
 - Scheduling (the weekly Monday/Tuesday cadence is not hard-coded here)
