@@ -1,11 +1,7 @@
 """Tests for wta_daily.youtube.uploader's orchestration logic.
 
 None of these tests make a real network call or require real Google
-credentials: the two functions that actually talk to the YouTube API
-(``_upload_video``/``_set_thumbnail``) are monkeypatched out, and
-``client_factory`` is injected as a stand-in for the real, credential-
-requiring ``build_client`` - exactly the seam the module exposes for this
-purpose (see ``publish_report``'s ``client_factory`` parameter).
+credentials.
 """
 
 from __future__ import annotations
@@ -18,7 +14,11 @@ import pytest
 from wta_daily.config import YouTubeConfig
 from wta_daily.models import DailyReport, Movement, PlayerReport
 from wta_daily.persistence.report_store import DailyOutputStore
-from wta_daily.persistence.youtube_upload_store import YouTubeUploadStore
+from wta_daily.persistence.youtube_upload_store import (
+    LANDSCAPE_VARIANT,
+    VERTICAL_VARIANT,
+    YouTubeUploadStore,
+)
 from wta_daily.youtube import uploader
 
 
@@ -47,10 +47,7 @@ def _store_with_video(tmp_path: Path, report_date: date = date(2026, 8, 17)) -> 
 
 
 class _FakeClient:
-    """Sentinel object standing in for a real googleapiclient YouTube
-    resource - tests only need to confirm the exact instance returned by
-    client_factory flows through to _upload_video/_set_thumbnail, never
-    that it behaves like a real API client."""
+    pass
 
 
 def test_publish_report_disabled_never_touches_disk_or_calls_anything(
@@ -106,22 +103,97 @@ def test_publish_report_uploads_video_captures_id_and_applies_thumbnail(
     assert result.thumbnail_uploaded is True
     assert result.thumbnail_error is None
 
-    # 1. video uploaded, with the canonical title/description/category/privacy
     assert len(upload_calls) == 1
-    _video_path, kwargs = upload_calls[0]
-    assert kwargs["title"] == "WTA Top 2 Update \u2014 August 17, 2026"
+    video_path, kwargs = upload_calls[0]
+    assert video_path == store.video_path
+    assert kwargs["title"] == "WTA Top 2 Update — August 17, 2026"
     assert kwargs["description"] == "A great day of tennis.\n"
     assert kwargs["category_id"] == "17"
     assert kwargs["privacy_status"] == "unlisted"
-
-    # 2. + 3. returned video ID captured and used for the thumbnail call
     assert thumbnail_calls == [("abc123", store.thumbnail_path)]
 
-    # 4. successful upload metadata recorded
     record = upload_store.get_upload(date(2026, 8, 17), "wta")
     assert record is not None
     assert record.video_id == "abc123"
-    assert record.video_url == "https://www.youtube.com/watch?v=abc123"
+    assert record.variant == LANDSCAPE_VARIANT
+
+
+def test_vertical_upload_uses_vertical_video_same_saved_title_and_description_and_no_thumbnail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = YouTubeConfig(enabled=True, privacy="public", category_id="17")
+    store = _store_with_video(tmp_path)
+    vertical_path = store.root / "vertical" / "video.mp4"
+    vertical_path.parent.mkdir(parents=True, exist_ok=True)
+    vertical_path.write_bytes(b"vertical mp4")
+    store.title_path.write_text("Exact Existing Daily Title\n", encoding="utf-8")
+    fake_client = _FakeClient()
+    upload_store = YouTubeUploadStore(tmp_path / "data")
+    upload_calls = []
+
+    def fake_upload_video(client: object, video_path: Path, **kwargs: object) -> str:
+        assert client is fake_client
+        upload_calls.append((video_path, kwargs))
+        return "short123"
+
+    def _no_thumbnail(*_a: object, **_kw: object) -> None:
+        raise AssertionError("vertical upload must not set the landscape thumbnail")
+
+    monkeypatch.setattr(uploader, "_upload_video", fake_upload_video)
+    monkeypatch.setattr(uploader, "_set_thumbnail", _no_thumbnail)
+
+    result = uploader.publish_report(
+        _report(),
+        store,
+        config,
+        upload_store,
+        variant=VERTICAL_VARIANT,
+        client_factory=lambda _config: fake_client,
+    )
+
+    assert result.status == "success"
+    assert result.video_id == "short123"
+    assert result.thumbnail_uploaded is False
+    assert len(upload_calls) == 1
+    video_path, kwargs = upload_calls[0]
+    assert video_path == vertical_path
+    assert kwargs["title"] == "Exact Existing Daily Title"
+    assert kwargs["description"] == "A great day of tennis.\n"
+    assert upload_store.get_upload(date(2026, 8, 17), "wta", VERTICAL_VARIANT).video_id == "short123"  # type: ignore[union-attr]
+    assert upload_store.get_upload(date(2026, 8, 17), "wta", LANDSCAPE_VARIANT) is None
+
+
+def test_landscape_record_does_not_block_vertical_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = YouTubeConfig(enabled=True)
+    store = _store_with_video(tmp_path)
+    vertical_path = store.root / "vertical" / "video.mp4"
+    vertical_path.parent.mkdir(parents=True, exist_ok=True)
+    vertical_path.write_bytes(b"vertical")
+    upload_store = YouTubeUploadStore(tmp_path / "data")
+    upload_store.record_upload(
+        date(2026, 8, 17),
+        "wta",
+        video_id="wide123",
+        video_url="https://x/wide",
+        title="t",
+        variant=LANDSCAPE_VARIANT,
+    )
+    monkeypatch.setattr(uploader, "_upload_video", lambda *a, **kw: "short123")
+    monkeypatch.setattr(uploader, "_set_thumbnail", lambda *a, **kw: None)
+
+    result = uploader.publish_report(
+        _report(),
+        store,
+        config,
+        upload_store,
+        variant=VERTICAL_VARIANT,
+        client_factory=lambda _c: _FakeClient(),
+    )
+
+    assert result.status == "success"
+    assert result.video_id == "short123"
 
 
 def test_publish_report_skips_duplicate_upload_by_default(
@@ -172,7 +244,7 @@ def test_publish_report_missing_video_fails_without_calling_client(
 ) -> None:
     config = YouTubeConfig(enabled=True)
     store = DailyOutputStore(tmp_path / "output", date(2026, 8, 17))
-    store.ensure_dirs()  # no video.mp4 written
+    store.ensure_dirs()
     upload_store = YouTubeUploadStore(tmp_path / "data")
 
     def _boom(*_a: object, **_kw: object) -> None:
@@ -183,7 +255,7 @@ def test_publish_report_missing_video_fails_without_calling_client(
     result = uploader.publish_report(_report(), store, config, upload_store)
 
     assert result.status == "failed"
-    assert "No video found" in (result.video_error or "")
+    assert "No landscape video found" in (result.video_error or "")
     assert upload_store.get_upload(date(2026, 8, 17), "wta") is None
 
 
@@ -205,7 +277,6 @@ def test_publish_report_video_upload_failure_does_not_delete_local_artifacts(
 
     assert result.status == "failed"
     assert "simulated network failure" in (result.video_error or "")
-    # Every locally generated artifact is completely untouched.
     assert store.video_path.exists()
     assert store.thumbnail_path.exists()
     assert store.youtube_description_path.exists()
@@ -229,14 +300,10 @@ def test_publish_report_thumbnail_failure_reported_separately_from_video_success
         _report(), store, config, upload_store, client_factory=lambda _c: _FakeClient()
     )
 
-    # Video upload itself is unambiguously a success...
     assert result.status == "success"
     assert result.video_id == "abc123"
-    # ...while the thumbnail failure is reported distinctly, not merged in.
     assert result.thumbnail_uploaded is False
     assert "simulated thumbnail failure" in (result.thumbnail_error or "")
-    # The video is still recorded as uploaded - no second upload attempt
-    # should ever be triggered just because the thumbnail step failed.
     record = upload_store.get_upload(date(2026, 8, 17), "wta")
     assert record is not None
     assert record.video_id == "abc123"
@@ -249,7 +316,6 @@ def test_publish_report_skips_thumbnail_upload_when_no_thumbnail_was_generated(
     store = DailyOutputStore(tmp_path / "output", date(2026, 8, 17))
     store.ensure_dirs()
     store.video_path.write_bytes(b"fake mp4 bytes")
-    # No thumbnail.png this time.
     upload_store = YouTubeUploadStore(tmp_path / "data")
 
     def _boom_thumbnail(*_a: object, **_kw: object) -> None:
